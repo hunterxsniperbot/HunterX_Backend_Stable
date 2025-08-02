@@ -2,17 +2,19 @@
   "name": "HunterX_Backend_Stable",
   "version": "1.0.0",
   "type": "module",
-"scripts": {
-  "start": "node index.js",
-  "test:supabase": "node scripts/testSupabase.js",
-  "test:solana": "node scripts/testSolana.js",
-  "test:tx": "node scripts/testTransaction.js",
-  "tag": "bash scripts/tagAndLog.sh"
-},
+  "scripts": {
+    "start": "node index.js",
+    "test:supabase": "node scripts/testSupabase.js",
+    "test:solana": "node scripts/testSolana.js",
+    "test:tx": "node scripts/testTransaction.js",
+    "test:sheets": "node scripts/testSheets.js",
+    "tag": "bash scripts/tagAndLog.sh"
+  },
   "dependencies": {
+    "@solana/web3.js": "^1.60.0",
     "@supabase/supabase-js": "^2.0.0",
-    "dotenv":               "^16.0.0",
-    "@solana/web3.js":      "^1.60.0",
-    "bs58":                 "^5.0.0"
+    "bs58": "^5.0.0",
+    "dotenv": "^16.0.0",
+    "googleapis": "^154.1.0"
   }
 }
