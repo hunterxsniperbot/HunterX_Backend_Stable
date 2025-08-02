@@ -3,11 +3,15 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "test:supabase": "node scripts/testSupabase.js"
+    "test:supabase": "node scripts/testSupabase.js",
+    "test:solana":  "node scripts/testSolana.js",
+    "test:tx":      "node scripts/testTransaction.js",
+    "start":        "node index.js"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.53.0",
-    "dotenv": "^17.2.1",
-    "telegraf": "^4.16.3"
+    "@supabase/supabase-js": "^2.0.0",
+    "dotenv":               "^16.0.0",
+    "@solana/web3.js":      "^1.60.0",
+    "bs58":                 "^5.0.0"
   }
 }
