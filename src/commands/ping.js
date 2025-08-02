@@ -1,9 +1,21 @@
+// src/commands/ping.js
+
 /**
- * Módulo de comando: ${cmd}
- * Añade aquí la implementación de /${cmd}
+ * Módulo /ping
+ * Responde con “pong” y chequea latencia.
+ *
+ * @param {TelegramBot} bot
+ * @param {Object} services
  */
-module.exports = (bot) => {
-  bot.command('${cmd}', ctx => {
-    ctx.reply('Comando /${cmd} aún no implementado.');
+export default function pingCommand(bot, services) {
+  bot.onText(/\/ping/, async (msg) => {
+    const chatId = msg.chat.id;
+    const start = Date.now();
+    const sentMessage = await bot.sendMessage(chatId, '🏓 Pong...');
+    const latency = Date.now() - start;
+    await bot.editMessageText(`🏓 Pong! Latencia: ${latency} ms`, {
+      chat_id: chatId,
+      message_id: sentMessage.message_id
+    });
   });
-};
+}

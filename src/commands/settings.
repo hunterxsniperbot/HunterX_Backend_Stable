@@ -1,0 +1,30 @@
+// src/commands/settings.js
+
+/**
+ * Módulo /configurar
+ * Muestra y ajusta parámetros del sniper.
+ *
+ * @param {TelegramBot} bot
+ * @param {Object} services
+ */
+export default function settingsCommand(bot, services) {
+  bot.onText(/\/configurar/, async (msg) => {
+    const chatId = msg.chat.id;
+    const texto = [
+      '⚙️ *Configuración actual del Sniper*',
+      '• Liquidez mínima: 150 SOL',
+      '• FDV máxima: 300K',
+      '• Holders máximos: 400',
+      '• Volumen mínimo: 1,500 USD/min',
+      '• Slippage: 1.5% – 10%',
+      '_Usa ⬅️ y ➡️ para cambiar valores._'
+    ].join('\n');
+
+    await bot.sendMessage(chatId, texto, {
+      parse_mode: 'Markdown',
+      reply_markup: { inline_keyboard: [
+        [{ text: '⬅️ Anterior', callback_data: 'set_prev' }, { text: '➡️ Siguiente', callback_data: 'set_next' }]
+      ]}
+    });
+  });
+}
