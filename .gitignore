@@ -1,7 +1,4 @@
-HEAD
-node_modules/
-=======
-# Ignorar node_modules
+# Ignorar dependencias de Node.js
 node_modules/
 
 # Ignorar archivo de variables de entorno
@@ -10,10 +7,10 @@ node_modules/
 # Ignorar archivos de logs
 *.log
 
-# Ignorar backups de nano o editores
+# Ignorar archivos generados por editores
 *~
+.DS_Store
 
-# Ignorar sistemas de compilación opcionales
+# Ignorar carpetas de build/transpilación
 dist/
 build/
-f410525 (chore: agregar .gitignore y remover node_modules del repositorio)
