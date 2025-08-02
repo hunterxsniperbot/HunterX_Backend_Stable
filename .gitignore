@@ -1,1 +1,19 @@
+HEAD
 node_modules/
+=======
+# Ignorar node_modules
+node_modules/
+
+# Ignorar archivo de variables de entorno
+.env
+
+# Ignorar archivos de logs
+*.log
+
+# Ignorar backups de nano o editores
+*~
+
+# Ignorar sistemas de compilación opcionales
+dist/
+build/
+f410525 (chore: agregar .gitignore y remover node_modules del repositorio)
