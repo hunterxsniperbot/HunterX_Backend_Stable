@@ -1,0 +1,22 @@
+[dotenv@17.2.1] injecting env (6) from .env -- tip: ⚙️  suppress all logs with { quiet: true }
+🔌 Probando Supabase…
+✅ Supabase OK: [
+  {
+    id: 'cc082fee-26b6-4891-b926-6fa7983d105a',
+    name: 'prueba',
+    created_at: '2025-08-01T23:32:53.350798+00:00'
+  }
+]
+FetchError: request to https://api.telegram.org/bot8343196088:[REDACTED]/getMe failed, reason: Client network socket disconnected before secure TLS connection was established
+    at ClientRequest.<anonymous> (/data/data/com.termux/files/home/HunterX_Backend_Stable/node_modules/node-fetch/lib/index.js:1501:11)
+    at ClientRequest.emit (node:events:507:28)
+    at emitErrorEvent (node:_http_client:104:11)
+    at TLSSocket.socketErrorListener (node:_http_client:518:5)
+    at TLSSocket.emit (node:events:507:28)
+    at emitErrorNT (node:internal/streams/destroy:170:8)
+    at emitErrorCloseNT (node:internal/streams/destroy:129:3)
+    at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {
+  type: 'system',
+  errno: 'ECONNRESET',
+  code: 'ECONNRESET'
+}

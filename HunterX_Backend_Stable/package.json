@@ -1,0 +1,13 @@
+{
+  "name": "HunterX_Backend_Stable",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "test:supabase": "node scripts/testSupabase.js",
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.0.0",
+    "dotenv": "^16.0.0"
+  }
+}
