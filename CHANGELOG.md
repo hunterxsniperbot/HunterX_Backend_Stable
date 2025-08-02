@@ -1,5 +1,16 @@
 # 🧾 CHANGELOG — HunterX_Backend_Stable
 
+## 📌 Wallet — [Wallet & Infraestructura]
+
+✅ Integración completa de Phantom, QuickNode y Sheets  
+🔒 Guardado en tag: `Wallet`
+
+> Fecha: 02 Aug 2025  
+> Rama base: `develop`
+
+---
+
+
 ## 📌 v1.1-sniper — [modulo 6 sniper automatico]
 
 ✅ Activacion y logica de sniper automatico  

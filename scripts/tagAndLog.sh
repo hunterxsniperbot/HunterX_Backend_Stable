@@ -1,24 +1,19 @@
 #!/data/data/com.termux/files/usr/bin/bash
 
-# === CONFIGURACIÓN ===
+# === CONFIGURACIÓN GENERAL ===
 CHANGELOG="CHANGELOG.md"
 BRANCH=$(git rev-parse --abbrev-ref HEAD)
 DATE=$(date "+%d %b %Y")
 
 # === INPUT DEL USUARIO ===
-read -p "📦 Nombre del módulo (ej: sheets, cartera, sniper): " MODULE
-read -p "📝 Título completo del cambio (ej: Módulo 8: Cartera): " TITLE
-read -p "✏️  Descripción breve (1 línea): " DESCRIPTION
+read -p "📦 Nombre del módulo (ej: wallet, infraestructura, sheets): " MODULE
+read -p "📝 Título del cambio (ej: v1.0.8 - Wallet & Infraestructura OK): " TITLE
+read -p "🧩 Descripción corta del módulo (ej: Integración completa de Phantom, QuickNode y Sheets): " DESCRIPTION
 
-# === GENERAR NUEVO TAG ===
-LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v1.0-initial")
-BASE_VERSION=$(echo "$LAST_TAG" | cut -d'-' -f1 | sed 's/v//')
-MAJOR=$(echo $BASE_VERSION | cut -d'.' -f1)
-MINOR=$(echo $BASE_VERSION | cut -d'.' -f2)
-NEW_MINOR=$((MINOR + 1))
-NEW_TAG="v${MAJOR}.${NEW_MINOR}-${MODULE}"
+# === GENERAR TAG ===
+NEW_TAG=$(echo "$TITLE" | awk '{print $1}')
 
-# === NUEVA ENTRADA AL CHANGELOG ===
+# === CREAR ENTRADA EN CHANGELOG ===
 ENTRY="
 ## 📌 $NEW_TAG — [$TITLE]
 
@@ -31,18 +26,18 @@ ENTRY="
 ---
 "
 
-# === INSERTAR EN LA SEGUNDA LÍNEA DEL CHANGELOG ===
+# === INSERTAR EN SEGUNDA LÍNEA DEL CHANGELOG ===
 if grep -q "# 🧾 CHANGELOG" "$CHANGELOG"; then
   awk -v entry="$ENTRY" 'NR==2{print entry}1' "$CHANGELOG" > "$CHANGELOG.tmp" && mv "$CHANGELOG.tmp" "$CHANGELOG"
 else
   echo -e "# 🧾 CHANGELOG\n\n$ENTRY" > "$CHANGELOG"
 fi
 
-# === COMMIT Y PUSH ===
-git add CHANGELOG.md
-git commit -m "📝 Actualiza changelog para $NEW_TAG"
+# === COMMIT & TAG & PUSH ===
+git add .
+git commit -m "🔒 $TITLE"
 git tag "$NEW_TAG"
 git push origin "$BRANCH"
 git push origin "$NEW_TAG"
 
-echo -e "\n✅ Todo actualizado en GitHub con tag $NEW_TAG"
+echo -e "\n✅ Todo actualizado con tag $NEW_TAG y registrado en $CHANGELOG"
