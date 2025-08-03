@@ -4,24 +4,26 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
 import TelegramBot from 'node-telegram-bot-api';
-import { createClient } from '@supabase/supabase-js';
 
-// --- Inicialización de rutas para ES Modules ---
+// Importa los servicios reales
+import {
+  supabaseClient,
+  quickNodeClient,
+  phantomClient,
+  sheetsClient
+} from './src/services/index.js';
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
 
-// --- Servicios principales ---
-const supabaseClient = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_KEY
-);
-
-// --- Instancia del bot ---
+// Instancia del bot con polling
 const bot = new TelegramBot(process.env.TELEGRAM_TOKEN, { polling: true });
+
+// Estado global por usuario
 bot.sniperConfig = {};
 bot.demoMode    = {};
 
-// --- Registro de Slash Commands ---
+// 1) Registrar comandos slash en Telegram
 async function registerTelegramCommands() {
   const commands = [
     { command: 'start',         description: 'Iniciar HunterX' },
@@ -39,9 +41,9 @@ async function registerTelegramCommands() {
   console.log('✅ Comandos slash registrados en Telegram');
 }
 
-// --- Registro dinámico de handlers desde src/commands ---
+// 2) Registrar dinámicamente todos los handlers de src/commands
 async function registerCommandHandlers() {
-  const commandsDir = path.join(__dirname, 'src', 'commands');  // <--- aquí debe apuntar
+  const commandsDir = path.join(__dirname, 'src', 'commands');
   const files = fs.readdirSync(commandsDir).filter(f => f.endsWith('.js'));
 
   for (const file of files) {
@@ -51,9 +53,9 @@ async function registerCommandHandlers() {
       if (typeof mod.default === 'function') {
         mod.default(bot, {
           supabaseClient,
-          quickNodeClient: null,  // si usas servicios, pásalos aquí
-          phantomClient:   null,
-          sheetsClient:    null
+          quickNodeClient,
+          phantomClient,
+          sheetsClient
         });
         console.log(`✅ Handler cargado: ${file}`);
       }
@@ -63,7 +65,7 @@ async function registerCommandHandlers() {
   }
 }
 
-// --- Función principal de arranque ---
+// 3) Función principal de arranque
 export default async function startBot() {
   console.log('🔧 Iniciando bot…');
   await registerTelegramCommands();

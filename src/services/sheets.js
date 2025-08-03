@@ -1,38 +1,37 @@
 // src/services/sheets.js
 import { google } from 'googleapis';
-import fs from 'fs';
-import path from 'path';
 
 export default function SheetsService({ credentialsPath, sheetId }) {
-  const fullPath = path.isAbsolute(credentialsPath)
-    ? credentialsPath
-    : path.join(process.cwd(), credentialsPath);
-  const creds = JSON.parse(fs.readFileSync(fullPath, 'utf-8'));
   const auth = new google.auth.GoogleAuth({
-    credentials: creds,
-    scopes: ['https://www.googleapis.com/auth/spreadsheets'],
+    keyFile: credentialsPath,
+    scopes: ['https://www.googleapis.com/auth/spreadsheets']
   });
-  const sheets = google.sheets({ version: 'v4', auth });
+  const sheetsApi = google.sheets({ version: 'v4', auth });
 
   return {
-    ping: async () => {
-      await sheets.spreadsheets.values.get({
-        spreadsheetId: sheetId,
-        range: 'A1:A1'
-      });
-      return true;
-    },
+    sheetId,
 
-    /**
-     * Añade una fila con [timestamp, user, token, amount, price, tx]
-     */
-    appendRow: async (row) => {
-      await sheets.spreadsheets.values.append({
-        spreadsheetId: sheetId,
-        range: 'A:A',
-        valueInputOption: 'RAW',
-        requestBody: { values: [row] }
-      });
+    async appendRow(values, attempt = 1) {
+      try {
+        await sheetsApi.spreadsheets.values.append({
+          spreadsheetId: this.sheetId,
+          range: 'A:A',
+          valueInputOption: 'RAW',
+          requestBody: { values: [values] }
+        });
+        console.log(`✅ Fila anexada a Google Sheets: ${values}`);
+      } catch (err) {
+        if (attempt < 4) {
+          const backoffMs = 500 * Math.pow(2, attempt);
+          console.warn(
+            `⚠️ Google Sheets appendRow falló (intento ${attempt}): ${err.code||err.message}` +
+            ` — reintentando en ${backoffMs}ms…`
+          );
+          await new Promise(r => setTimeout(r, backoffMs));
+          return this.appendRow(values, attempt + 1);
+        }
+        console.error('❌ Google Sheets appendRow definitivamente falló:', err);
+      }
     }
   };
 }
