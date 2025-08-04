@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@solana/web3.js": "^1.60.0",
+    "@supabase/postgrest-js": "^1.21.1",
     "@supabase/supabase-js": "^2.53.0",
     "body-parser": "^2.2.0",
     "bs58": "^5.0.0",
@@ -19,6 +20,7 @@
     "express": "^5.1.0",
     "googleapis": "^154.1.0",
     "node-fetch": "^3.3.2",
-    "node-telegram-bot-api": "^0.66.0"
+    "node-telegram-bot-api": "^0.66.0",
+    "pg": "^8.16.3"
   }
 }

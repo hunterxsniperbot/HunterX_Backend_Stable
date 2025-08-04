@@ -5,7 +5,6 @@ import path from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
 import TelegramBot from 'node-telegram-bot-api';
 
-// Importa los servicios reales
 import {
   supabaseClient,
   quickNodeClient,
@@ -16,56 +15,68 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
 
-// Instancia del bot con polling
-const bot = new TelegramBot(process.env.TELEGRAM_TOKEN, { polling: true });
+// Inicializa el bot con polling robusto
+const bot = new TelegramBot(process.env.TELEGRAM_TOKEN, {
+  polling: {
+    interval: 3000,
+    timeout: 60,
+    retries: Infinity,
+    autoStart: true
+  }
+});
 
-// Estado global por usuario
+// Estado por usuario
 bot.sniperConfig = {};
+bot._lastPnl    = {};
 bot.demoMode    = {};
 
-// 1) Registrar comandos slash en Telegram
+// Registra comandos slash
 async function registerTelegramCommands() {
-  const commands = [
-    { command: 'start',         description: 'Iniciar HunterX' },
-    { command: 'tendencias',    description: 'Mostrar tendencias en Discord' },
-    { command: 'vertokens',     description: 'Ver tokens nuevos' },
-    { command: 'activarsniper', description: 'Activar sniper automático' },
-    { command: 'detener',       description: 'Detener sniper' },
-    { command: 'configurar',    description: 'Configurar parámetros' },
-    { command: 'cartera',       description: 'Ver mi cartera' },
-    { command: 'historial',     description: 'Ver historial' },
-    { command: 'demo',          description: 'Activar modo demo' },
-    { command: 'help',          description: 'Ayuda rápida' },
-  ];
-  await bot.setMyCommands(commands);
-  console.log('✅ Comandos slash registrados en Telegram');
+  await bot.setMyCommands([
+    { command: 'start',       description: 'Iniciar HunterX' },
+    { command: 'settings',    description: 'Configurar sniper' },
+    { command: 'autosniper',  description: 'Activar sniper automático' },
+    { command: 'detener',     description: 'Detener sniper automático' },
+    { command: 'cartera',     description: 'Ver mi cartera' },
+    { command: 'history',     description: 'Ver historial de trades' },
+    { command: 'demo',        description: 'Demo ON/OFF' },
+    { command: 'help',        description: 'Ayuda rápida' }
+    // añade más si los usas
+  ]);
 }
 
-// 2) Registrar dinámicamente todos los handlers de src/commands
+// Carga handlers de src/commands
 async function registerCommandHandlers() {
   const commandsDir = path.join(__dirname, 'src', 'commands');
   const files = fs.readdirSync(commandsDir).filter(f => f.endsWith('.js'));
 
   for (const file of files) {
     const modulePath = pathToFileURL(path.join(commandsDir, file)).href;
-    try {
-      const mod = await import(modulePath);
-      if (typeof mod.default === 'function') {
-        mod.default(bot, {
-          supabaseClient,
-          quickNodeClient,
-          phantomClient,
-          sheetsClient
-        });
-        console.log(`✅ Handler cargado: ${file}`);
-      }
-    } catch (err) {
-      console.error(`❌ Error cargando handler ${file}:`, err.message);
+    const mod = await import(modulePath);
+    if (typeof mod.default === 'function') {
+      mod.default(bot, {
+        supabaseClient,
+        quickNodeClient,
+        phantomClient,
+        sheetsClient
+      });
+      console.log(`✅ Handler cargado: ${file}`);
     }
   }
+
+  // Finalmente, registra tus callbacks de inline keyboards
+  const cbPath = pathToFileURL(path.join(__dirname, 'src', 'commands', 'callbacks.js')).href;
+  const { default: registerCallbacks } = await import(cbPath);
+  registerCallbacks(bot, {
+    supabaseClient,
+    quickNodeClient,
+    phantomClient,
+    sheetsClient
+  });
+  console.log('✅ Handler cargado: callbacks.js');
 }
 
-// 3) Función principal de arranque
+// Función principal de arranque
 export default async function startBot() {
   console.log('🔧 Iniciando bot…');
   await registerTelegramCommands();

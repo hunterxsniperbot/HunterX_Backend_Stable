@@ -1,64 +1,51 @@
 // src/commands/start.js
-
-/**
- * Módulo 1: /start
- * Handler para mostrar mensaje de bienvenida e inicializar servicios en "frío".
- *
- * @param {TelegramBot} bot
- * @param {Object} services
- *   - services.quickNodeClient  Cliente QuickNode RPC
- *   - services.phantomClient    Cliente Phantom Wallet
- *   - services.supabaseClient   Cliente Supabase
- *   - services.sheetsClient     Cliente Google Sheets
- */
-export default function registerStart(bot, services) {
+export default function registerStart(bot, { quickNodeClient, supabaseClient, phantomClient, sheetsClient }) {
   bot.onText(/\/start/, async (msg) => {
     const chatId = msg.chat.id;
 
-    // Ping a QuickNode
+    // 🔌 Verificamos servicios (opcionales, pero recomendados)
     try {
-      await services.quickNodeClient.ping();
-      console.log('QuickNode OK');
+      await supabaseClient.from('test').select('*').limit(1);
+      console.log('✅ Supabase OK');
     } catch (e) {
-      console.error('QuickNode ping fallido:', e);
+      console.error('❌ Error Supabase:', e.message);
     }
 
-    // Health-check Phantom
     try {
-      await services.phantomClient.healthCheck();
-      console.log('Phantom OK');
+      await quickNodeClient.ping();
+      console.log('✅ QuickNode OK');
     } catch (e) {
-      console.error('Phantom health check fallido:', e);
+      console.error('❌ QuickNode ping fallido:', e.message);
     }
 
-    // Ping Supabase (simple select de prueba)
     try {
-      await services.supabaseClient.from('test').select('*').limit(1);
-      console.log('Supabase OK');
+      await phantomClient.healthCheck();
+      console.log('✅ Phantom OK');
     } catch (e) {
-      console.error('Supabase ping fallido:', e);
+      console.error('❌ Phantom health check fallido:', e.message);
     }
 
-    // Ping Google Sheets
     try {
-      await services.sheetsClient.ping();
-      console.log('Google Sheets OK');
+      await sheetsClient.ping();
+      console.log('✅ Google Sheets OK');
     } catch (e) {
-      console.error('Google Sheets ping fallido:', e);
+      console.error('❌ Google Sheets ping fallido:', e.message);
     }
 
-    // Mensaje de bienvenida
-    const welcomeMessage = [
-      '📲 *Iniciando HunterX...*',
+    // 🙌 Mensaje de bienvenida SIN teclado táctil
+    const lines = [
+      '👻 ¡Bienvenido a HunterX!',
       '🌐 Conectado a QuickNode',
       '📡 Escaneando blockchain de Solana...',
-      '🧠 Activando IA predictiva',
+      '🧠 IA predictiva ACTIVADA',
       '🎯 Precisión quirúrgica ACTIVADA',
-      '🚀 _¡Listo para cazar gemas!_'
-    ].join('\n');
+      '🚀 ¡Listo para cazar gemas!'
+    ];
+    const welcome = lines.join('\n');
 
-    await bot.sendMessage(chatId, welcomeMessage, {
+    await bot.sendMessage(chatId, welcome, {
       parse_mode: 'Markdown'
+      // No reply_markup aquí → no aparece teclado táctil
     });
   });
 }

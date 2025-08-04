@@ -4,100 +4,125 @@ import fetch from 'node-fetch';
 import { Connection, Keypair, PublicKey } from '@solana/web3.js';
 
 /**
- * Servicio Phantom Wallet y posiciones.
- * Usa tu clave privada Base58 desde PHANTOM_PRIVATE_KEY.
+ * Servicio Phantom para conectar con tu wallet y Supabase.
+ * - privateKeyBase58: tu clave privada en Base58 (32 o 64 bytes)
+ * - rpcUrl: URL de QuickNode
+ * - supabaseClient: cliente de Supabase ya inicializado
  */
 export default function PhantomService({ privateKeyBase58, rpcUrl, supabaseClient }) {
+  // 1) Conexión a la RPC
   const connection = new Connection(rpcUrl, 'confirmed');
 
-  // Decodifica la clave privada Base58
-  const secretKey = bs58.decode(privateKeyBase58);
-  if (secretKey.length !== 64) {
-    throw new Error('Clave privada Base58 inválida (debe ser 64 bytes)');
+  // 2) Decodifica tu clave Base58
+  const decoded = bs58.decode(privateKeyBase58);
+  let keypair;
+  if (decoded.length === 32) {
+    keypair = Keypair.fromSeed(decoded);
+  } else if (decoded.length === 64) {
+    keypair = Keypair.fromSecretKey(decoded);
+  } else {
+    throw new Error(`Clave Base58 inválida: ${decoded.length} bytes`);
   }
-  const keypair   = Keypair.fromSecretKey(secretKey);
+
   const publicKey = keypair.publicKey;
 
   return {
-    // Health check simple
+    // Health check: comprueba que tu wallet responde
     healthCheck: async () => {
-      await connection.getBalance(publicKey);
-      return true;
+      try {
+        await connection.getBalance(publicKey);
+        return true;
+      } catch (err) {
+        throw new Error(`Phantom health error: ${err.message}`);
+      }
     },
 
-    // Balance en USD (usa CoinGecko)
+    // Obtener balance USD aproximado (sol * precio SOL/USD desde CoinGecko)
     getBalanceUsd: async () => {
       const lamports = await connection.getBalance(publicKey);
-      const sol       = lamports / 1e9;
-      const resp      = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd');
-      const json      = await resp.json();
-      return sol * json.solana.usd;
+      const sol = lamports / 1e9;
+      try {
+        const res = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd');
+        const json = await res.json();
+        const priceUsd = json.solana.usd;
+        return sol * priceUsd;
+      } catch {
+        return sol * 20; // fallback
+      }
     },
 
-    // Stubs de compra/venta (reemplaza con tu lógica)
-    buyToken: async ({ mint, amount, slippage }) => {
-      console.log(`Stub buyToken: comprando $${amount} de mint ${mint}`);
+    // Compra de token (stub: reemplaza por tu lógica on-chain)
+    buyToken: async ({ mintAddress, amount, slippage }) => {
+      console.log(`Stub buyToken: comprando $${amount} de mint ${mintAddress}`);
+      // aquí va tu envío de transacción real a Phantom/Serum/Jupiter...
       return `TX_BUY_${Date.now()}`;
     },
-    sellToken: async ({ mint, amount, slippage }) => {
-      console.log(`Stub sellToken: vendiendo ${amount.toFixed(4)} tokens de mint ${mint}`);
+
+    // Venta de token (stub: reemplaza por tu lógica on-chain)
+    sellToken: async ({ mintAddress, amount, slippage }) => {
+      console.log(`Stub sellToken: vendiendo ${amount} de mint ${mintAddress}`);
       return `TX_SELL_${Date.now()}`;
     },
 
-    // Posiciones abiertas desde Supabase
+    /**
+     * getOpenPositions: recupera todas las trades abiertas (pnl NULL)
+     * y añade precio actual desde DexScreener
+     */
     getOpenPositions: async (userId) => {
       const { data, error } = await supabaseClient
         .from('trades')
-        .select('user_id,symbol,mint_address,price_entry,amount_usd,buy_signature')
+        .select('token,price,amount_usd,amount_token,tx_signature,pnl,created_at')
         .eq('user_id', userId)
-        .eq('status', 'open');
-      if (error) throw error;
-      return data.map(r => ({
-        tokenSymbol:    r.symbol,
-        tokenMint:      r.mint_address,
-        entryPrice:     parseFloat(r.price_entry),
-        amountUsd:      parseFloat(r.amount_usd),
-        buyTxSignature: r.buy_signature,
-        currentPrice:   null,
-        amountToken:    parseFloat(r.amount_usd) / parseFloat(r.price_entry)
+        .is('pnl', null);
+
+      if (error) throw new Error(`Error fetching open positions: ${error.message}`);
+
+      // enriquecer con precio en vivo:
+      return Promise.all(data.map(async r => {
+        let currentPrice = parseFloat(r.price);
+        try {
+          const res = await fetch(`https://api.dexscreener.com/latest/dex/solana/${r.tx_signature}`);
+          if (res.ok) {
+            const json = await res.json();
+            const p = json.pairs?.[0]?.priceUsd;
+            if (p) currentPrice = parseFloat(p);
+          }
+        } catch (_) { /* ignora */ }
+        return {
+          tokenSymbol:    r.token,
+          tokenMint:      r.tx_signature,  // usamos tx_signature como ID único
+          entryPrice:     parseFloat(r.price),
+          amountUsd:      parseFloat(r.amount_usd),
+          amountToken:    parseFloat(r.amount_token),
+          buyTxSignature: r.tx_signature,
+          pnl:            r.pnl,
+          openedAt:       r.created_at,
+          currentPrice
+        };
       }));
     },
 
-    // Una posición
-    getPosition: async (userId, tokenMint) => {
+    /**
+     * getPosition: recupera UNA posición usando tx_signature
+     */
+    getPosition: async (userId, txSignature) => {
       const { data, error } = await supabaseClient
         .from('trades')
-        .select('symbol,mint_address,price_entry,amount_usd,buy_signature')
+        .select('token,price,amount_usd,amount_token,tx_signature,pnl,created_at')
         .eq('user_id', userId)
-        .eq('mint_address', tokenMint)
-        .eq('status', 'open')
+        .eq('tx_signature', txSignature)
         .single();
-      if (error) throw error;
-      return {
-        tokenSymbol:    data.symbol,
-        tokenMint:      data.mint_address,
-        entryPrice:     parseFloat(data.price_entry),
-        amountUsd:      parseFloat(data.amount_usd),
-        buyTxSignature: data.buy_signature,
-        currentPrice:   null,
-        amountToken:    parseFloat(data.amount_usd) / parseFloat(data.price_entry)
-      };
-    },
 
-    // Balance estructurado
-    getWalletBalance: async (userId) => {
-      const balanceUsd = await this.getBalanceUsd();
-      const { data, error } = await supabaseClient
-        .from('trades')
-        .select('amount_usd')
-        .eq('user_id', userId)
-        .eq('status', 'open');
-      if (error) throw error;
-      const investedUsd = data.reduce((sum, r) => sum + parseFloat(r.amount_usd), 0);
+      if (error) throw new Error(`Error fetching position: ${error.message}`);
       return {
-        totalUsd:    balanceUsd.toFixed(2),
-        investedUsd: investedUsd.toFixed(2),
-        freeUsd:     (balanceUsd - investedUsd).toFixed(2)
+        tokenSymbol:    data.token,
+        entryPrice:     parseFloat(data.price),
+        amountUsd:      parseFloat(data.amount_usd),
+        amountToken:    parseFloat(data.amount_token),
+        buyTxSignature: data.tx_signature,
+        pnl:            data.pnl,
+        openedAt:       data.created_at,
+        currentPrice:   null  // se rellenará en el handler cartera
       };
     }
   };
