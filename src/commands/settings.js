@@ -1,81 +1,63 @@
 // src/commands/settings.js
-export default function registerSettings(bot, { supabaseClient }) {
-  bot.onText(/\/settings/, async (msg) => {
+export default function registerSettings(bot) {
+  // Manejador del comando /settings
+  bot.onText(/\/settings/, (msg) => {
     const chatId = msg.chat.id;
     const userId = msg.from.id;
+    // Valor por defecto si no existe
+    const cfg = bot.sniperConfig[userId] || { monto: 100 };
 
-    // Aseguramos el objeto de config por usuario
-    if (!bot.sniperConfig) bot.sniperConfig = {};
-    let cfg = bot.sniperConfig[userId];
-
-    // Si aún no hay, cargamos valores por defecto (o desde Supabase)
-    if (!cfg) {
-      // Aquí podrías leer de Supabase si quieres persistir:
-      // const { data } = await supabaseClient.from('sniper_config')
-      //   .select('param, value')
-      //   .eq('user_id', userId);
-      // Mapea data a cfg = { monto: ..., slippage: ..., scanInterval: ... , ... }
-      cfg = {
-        minAge:       1,        // minutos
-        maxAge:       5,
-        minLiquidity: 150,      // SOL
-        maxFDV:       300_000,  // USD
-        maxHolders:   400,
-        minVolume:    1_500,    // USD/min
-        monto:        100,      // USD
-        slippage:     1.5,      // %
-        scanInterval: 15_000,   // ms
-        // los siguientes filtros “auto-ajustables” podrías sobreescribirlos
-        // tras leer de tu tabla sniper_tuning
-      };
-      bot.sniperConfig[userId] = cfg;
-    }
-
-    // Construimos el mensaje con Markdown
-    const text = [
-      '⚙️ *Configuración del Sniper*',
-      `⏱️ Edad token: *${cfg.minAge}–${cfg.maxAge} min*`,
-      `💧 Liquidez mínima: *${cfg.minLiquidity} SOL*`,
-      `📉 FDV máxima: *${cfg.maxFDV.toLocaleString()} USD*`,
-      `👥 Holders máx.: *${cfg.maxHolders}*`,
-      `📈 Volumen mín.: *$${cfg.minVolume.toLocaleString()} USD/min*`,
-      `💰 Monto compra: *$${cfg.monto.toFixed(2)} USD*`,
-      `💸 Slippage: *${cfg.slippage.toFixed(1)}%*`,
-      `🔐 Contrato renunciado: *✅*`,
-      `🛡️ Honeypot: *❌*`,
-      `🐳 Whale detect: *✅*`,
-      `⏱ Escaneo: *${(cfg.scanInterval/1000).toFixed(0)}s*`,
-      `🕓 Horarios: *9–12 / 13–16 / 17–20 hs*`,
-      `🛑 Stop Profit:`,
-      `   +100% → 30%`,
-      `   +250% → 125%`,
-      `   +500% → 200%`,
-      `   +750% → 300%`,
-      `   +1000% → 400%`,
-      `   +2000% → 800%`,
-      `🛑 Stop Loss automático (scam)`
-    ].join('\n');
-
-    // Inline keyboard para cambiar ajustes
-    const keyboard = {
+    // Texto y teclado inline
+    const text = `💰 Monto de compra por operación: *\$${cfg.monto.toFixed(2)}*\n\n` +
+                 `Pulsa el botón para cambiarlo:`;
+    const reply_markup = {
       inline_keyboard: [
         [
-          { text: '💰 Monto',       callback_data: `set_monto_${userId}` },
-          { text: '📈 Volumen',     callback_data: `set_volume_${userId}` }
-        ],
-        [
-          { text: '⚡ Intervalo',   callback_data: `set_interval_${userId}` },
-          { text: '🔀 Slippage',    callback_data: `set_slippage_${userId}` }
-        ],
-        [
-          { text: '🔧 Otros filtros', callback_data: `set_filters_${userId}` }
+          { 
+            text: `✏️ Cambiar a \$${cfg.monto.toFixed(2)}`, 
+            callback_data: `set_monto` 
+          }
         ]
       ]
     };
 
-    await bot.sendMessage(chatId, text, {
+    bot.sendMessage(chatId, text, {
       parse_mode: 'Markdown',
-      reply_markup: keyboard
+      reply_markup
     });
+  });
+
+  // Manejador de los callbacks
+  bot.on('callback_query', async (query) => {
+    const chatId = query.message.chat.id;
+    const userId = query.from.id;
+
+    if (query.data === 'set_monto') {
+      // 1) Pedimos el nuevo monto
+      await bot.sendMessage(chatId, '➡️ Ingresa el nuevo monto de compra por operación (en USD):');
+      
+      // 2) Esperamos un único mensaje de respuesta de este usuario
+      const responder = (msg) => {
+        if (msg.chat.id !== chatId || msg.from.id !== userId) return;
+        const val = parseFloat(msg.text.replace(/[^0-9.]/g, ''));
+        if (isNaN(val) || val <= 0) {
+          bot.sendMessage(chatId, '❌ Monto inválido. Usa /settings para intentarlo otra vez.');
+        } else {
+          // 3) Guardamos la nueva configuración
+          bot.sniperConfig[userId] = {
+            ...(bot.sniperConfig[userId] || {}),
+            monto: val
+          };
+          bot.sendMessage(chatId, `✅ Monto actualizado a *\$${val.toFixed(2)}* USD`, { parse_mode: 'Markdown' });
+        }
+        // 4) Dejamos de escuchar
+        bot.removeListener('message', responder);
+      };
+
+      bot.on('message', responder);
+    }
+
+    // IMPORTANT: responde al callback para quitar el “relojcito” en Telegram
+    await bot.answerCallbackQuery(query.id);
   });
 }
