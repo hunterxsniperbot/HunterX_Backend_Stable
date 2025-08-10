@@ -1,30 +1,33 @@
-// src/services/index.js
-import { createClient } from '@supabase/supabase-js';
-import QuickNodeService from './quicknode.js';
-import PhantomService   from './phantom.js';
-import SheetsService    from './sheets.js';
+// src/services/index.js — normaliza exports para evitar "not a function"
 
-// Inicializa Supabase
-export const supabaseClient = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_KEY
-);
+import * as sheetsMod   from './sheets.js';
+import * as quickMod    from './quicknode.js';
+import * as phantomMod  from './phantom.js';
+import * as supabaseMod from './supabase.js';
 
-// Servicio QuickNode para acceso RPC a Solana
-export const quickNodeClient = QuickNodeService({
-  rpcUrl: process.env.QUICKNODE_RPC_URL
-});
+// Sheets (objeto con appendRow)
+const sheetsClient    = sheetsMod.default   || sheetsMod;
 
-// Servicio Phantom usando tu private key Base58
-export const phantomClient = PhantomService({
-  privateKeyBase58: process.env.PHANTOM_PRIVATE_KEY,
-  rpcUrl:           process.env.QUICKNODE_RPC_URL,
+// Supabase (objeto con upsertTrade/insertEvent/…)
+const supabaseClient  = supabaseMod.default || supabaseMod;
+
+// Phantom → asegurar { buyToken, sellToken }
+const phantomBase = phantomMod.default || phantomMod;
+const phantomClient = {
+  buyToken : phantomBase.buyToken  || (async () => { throw new Error('phantom.buyToken no implementado'); }),
+  sellToken: phantomBase.sellToken || (async () => { throw new Error('phantom.sellToken no implementado'); })
+};
+
+// QuickNode → asegurar { getPrice, scanNewTokens }
+const qnBase = quickMod.default || quickMod;
+const quickNodeClient = {
+  getPrice     : qnBase.getPrice      || qnBase.price      || (async () => { throw new Error('quicknode.getPrice no implementado'); }),
+  scanNewTokens: qnBase.scanNewTokens || qnBase.scan       || (async () => [])
+};
+
+export {
+  sheetsClient,
+  quickNodeClient,
+  phantomClient,
   supabaseClient
-});
-
-// Servicio Google Sheets para anexar rows
-export const sheetsClient = SheetsService({
-  credentialsPath: process.env.GOOGLE_SHEETS_CREDENTIALS,
-  sheetId:         process.env.GOOGLE_SHEETS_ID
-});
-
+};

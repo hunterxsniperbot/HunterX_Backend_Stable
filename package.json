@@ -14,13 +14,15 @@
     "tag": "bash scripts/tagAndLog.sh"
   },
   "dependencies": {
-    "@solana/web3.js": "^1.41.0",
-    "@supabase/supabase-js": "^2.0.0",
+    "@solana/web3.js": "^1.98.4",
+    "@supabase/supabase-js": "^2.54.0",
     "body-parser": "^1.20.2",
     "bs58": "^4.0.1",
     "bull": "^4.11.0",
     "dotenv": "^16.0.0",
     "express": "^4.18.2",
+    "google-auth-library": "^10.2.1",
+    "google-spreadsheet": "^5.0.2",
     "googleapis": "^131.0.0",
     "ioredis": "^5.3.2",
     "node-fetch": "^3.3.2",
@@ -28,6 +30,10 @@
     "redis": "^4.6.5"
   },
   "devDependencies": {
-    "depcheck": "^1.4.7"
+    "@eslint/js": "^9.32.0",
+    "depcheck": "^1.4.7",
+    "eslint": "^9.32.0",
+    "eslint-plugin-react": "^7.37.5",
+    "globals": "^16.3.0"
   }
 }

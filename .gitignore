@@ -1,16 +1,25 @@
-# Ignorar dependencias de Node.js
+# Node
 node_modules/
+npm-debug.log*
+yarn-error.log*
+pnpm-lock.yaml
+package-lock.json
 
-# Ignorar archivo de variables de entorno
-.env
-
-# Ignorar archivos de logs
-*.log
-
-# Ignorar archivos generados por editores
-*~
-.DS_Store
-
-# Ignorar carpetas de build/transpilación
+# Build / caches
 dist/
 build/
+.cache/
+.tmp/
+
+# Env / claves
+.env
+.env.*
+.credentials
+*.key
+*.pem
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

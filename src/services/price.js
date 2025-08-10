@@ -1,16 +1,10 @@
-// src/services/price.js
-import fetch from 'node-fetch';
+import { bePrice } from './vendors/birdeye.js';
+import { dsTokenPairs } from './vendors/dexscreener.js';
 
-export async function fetchDexscreenerPrice(mint) {
-  try {
-    const res = await fetch(
-      `https://api.dexscreener.com/latest/dex/solana/${mint}`,
-      { timeout: 5000, headers: { 'User-Agent': 'Mozilla/5.0' } }
-    );
-    if (!res.ok) return null;
-    const json = await res.json();
-    return parseFloat(json.pairs?.[0]?.priceUsd) || null;
-  } catch {
-    return null;
-  }
+export async function getTokenPriceUsd(mint) {
+  const b = await bePrice(mint).catch(()=>null);
+  if (Number.isFinite(b) && b > 0) return b;
+  const pairs = await dsTokenPairs(mint).catch(()=>null);
+  const p = Array.isArray(pairs) ? pairs[0] : null;
+  return p?.priceUsd ? Number(p.priceUsd) : null;
 }
