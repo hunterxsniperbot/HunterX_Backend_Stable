@@ -23,3 +23,10 @@ build/
 Thumbs.db
 .vscode/
 .idea/
+
+# === secrets ===
+.env
+sa.json
+
+# backups
+backup-*.tar.gz
