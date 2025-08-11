@@ -1,169 +1,171 @@
-// bot.js — HunterX (ESM) — FINAL
+import dotenv from "dotenv";
+dotenv.config({ override: true });
 
-// ——— Errores globales ———
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('❌ Unhandled Rejection at:', promise, 'reason:', reason);
-});
-process.on('uncaughtException', err => {
-  console.error('❌ Uncaught Exception thrown:', err.stack || err);
-  process.exit(1);
-});
+// bot.js — HunterX (modo TURBO)
+// - Guards anti-doble inicio
+// - Slash menu único (sin reply-keyboard)
+// - Registro explícito de comandos (sin whitelist-loader)
+// - Limpia teclados persistentes heredados
 
-// ——— Imports base ———
-import 'dotenv/config';
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath, pathToFileURL } from 'url';
 import TelegramBot from 'node-telegram-bot-api';
 
-// Services principales
-import {
-  supabaseClient,
-  quickNodeClient,
-  phantomClient,
-  sheetsClient
-} from './src/services/index.js';
-
-// Comando AutoSniper (lo registramos explícito)
+// Handlers (comandos)
+import registerAjustes    from './src/commands/ajustes.js';
 import registerAutoSniper from './src/commands/autoSniper.js';
+import registerMensaje    from './src/commands/mensaje.js';
+import registerRegistro   from './src/commands/registro.js';
+import registerWallet     from './src/commands/wallet.js';
+import registerHealth     from './src/commands/health.js';
 
-// (Opcional) señales externas (no rompe si no hay keys/feed)
-import {
-  refreshSignalsFromWhales,
-  refreshSignalsFromDiscord
-} from './src/services/intel.js';
+// Servicios que pasamos a los handlers
+import * as quickNodeClient from './src/services/quicknode.js';
+import * as phantomClient   from './src/services/phantom.js';
+import * as trading         from './src/services/trading.js';
 
-// ——— Init bot TG ———
-const __filename = fileURLToPath(import.meta.url);
-const __dirname  = path.dirname(__filename);
-
-const bot = new TelegramBot(process.env.TELEGRAM_TOKEN, {
-  polling: {
-    interval: 3000,
-    params: { timeout: 20 },
-    autoStart: true
-  }
-});
-
-// Errores polling/webhook
-bot.on('polling_error', (err) => {
-  console.error('error: [polling_error]', JSON.stringify({
-    code: err.code, message: err.message
-  }));
-});
-bot.on('webhook_error', (err) => {
-  console.error('error: [webhook_error]', err.message);
-});
-
-// ——— Estado global ———
-bot.sniperConfig = {};          // por usuario (monto, scanInterval, etc.)
-bot._intervals   = {};          // loops /autosniper por usuario
-bot.demoMode     = {};          // flags DEMO
-bot.realMode     = {};          // flags REAL
-bot._stopProfitInterval = null; // si usás monitor global fuera de autoSniper
-bot._positions   = {};          // posiciones abiertas por usuario
-bot._guardEnabled = {};         // Guard ON/OFF por usuario (default ON vía lógica)
-bot._guardMode    = {};         // 'hard' | 'soft'
-
-// ——— Slash commands (orden exacto) ———
-async function registerTelegramCommands() {
-  await bot.setMyCommands([
-    { command: 'mensaje',    description: 'Conexiones activas' },
-    { command: 'autosniper', description: 'Activar sniper automático' },
-    { command: 'real',       description: 'Modo (Trading real)' },
-    { command: 'demo',       description: 'Modo (Demo simulación)' },
-    { command: 'stop',       description: 'Detener sniper' },
-    { command: 'wallet',     description: 'Ver posiciones abiertas' },
-    { command: 'registro',   description: 'Ver posiciones cerradas' },
-    { command: 'discord',    description: 'Tendencias en Discord' },
-    { command: 'ajustes',    description: 'Configurar sniper' }
-    // Nota: /debug queda oculto (no se agrega aquí)
-  ]);
-  console.log('[Slash] Comandos activos (orden): mensaje, autosniper, real, demo, stop, wallet, registro, discord, ajustes');
+/* ────────────────────────────────────────────────────────────────────────── */
+/* Guards anti-doble inicio                                                  */
+/* ────────────────────────────────────────────────────────────────────────── */
+if (global.__HX_STARTED__) {
+  console.log('⚠️ Bot ya estaba iniciado, evito doble bootstrap');
+} else {
+  global.__HX_STARTED__ = true;
 }
 
-// ——— Carga handlers con whitelist ———
-async function registerCommandHandlers() {
-  const commandsDir = path.join(__dirname, 'src', 'commands');
-  let files = [];
-  try {
-    files = fs.readdirSync(commandsDir).filter(f => f.endsWith('.js'));
-  } catch (e) {
-    console.error('[Commands] No se pudo leer src/commands:', e.message || e);
-    return;
-  }
-
-  // Whitelist para no chocar con archivos viejos
-  const WHITELIST = new Set([
-    'mensaje.js',
-    'ajustes.js',
-    'demo.js',
-    'wallet.js',
-    'registro.js',
-    'discord.js',
-    'signals.js',
-    'pick.js',
-    'initSheets.js',
-    'dbPing.js',
-    // 'stop.js',      // NO cargar si /stop ya está dentro de autoSniper.js
-    // 'real.js',      // si tenés handlers separados para /real y /demo, podés agregarlos
-    // 'debug.js',     // lo dejamos oculto (ya está dentro de autoSniper.js)
-  ]);
-
-  for (const file of files) {
-    // omitimos autoSniper.js aquí; lo registramos aparte al final
-    if (file === 'autoSniper.js') continue;
-
-    if (!WHITELIST.has(file)) {
-      console.log(`[Commands] ignorado por whitelist: ${file}`);
-      continue;
-    }
-
-    const modulePath = pathToFileURL(path.join(commandsDir, file)).href;
-    try {
-      const mod = await import(modulePath);
-      if (typeof mod.default === 'function') {
-        mod.default(bot, { supabaseClient, quickNodeClient, phantomClient, sheetsClient });
-        console.log(`✅ Handler cargado: ${file}`);
-      } else {
-        console.log(`ℹ️ ${file} no exporta default function; omitido`);
-      }
-    } catch (err) {
-      console.error(`❌ Error cargando ${file}:`, err);
-    }
-  }
-
-  // Registrar autoSniper al final (incluye /autosniper, /stop, /debug)
-  registerAutoSniper(bot, {
-    quickNodeClient,
-    phantomClient,
-    sheetsClient,
-    supabaseClient
-  });
-  console.log('✅ Handler cargado: autoSniper.js');
-}
-
-// ——— Arranque ———
-(async () => {
-  try {
-    console.log('🔧 Iniciando bot…');
-    await registerTelegramCommands();
-    await registerCommandHandlers();
-
-    // Cron de señales externas cada 60s (no rompe si no hay keys/feeds)
-    setInterval(async () => {
-      try {
-        const n1 = await refreshSignalsFromWhales({ windowSec: 60, minUsd: 25000 });
-        const n2 = await refreshSignalsFromDiscord();
-        if (n1 || n2) console.log(`[signals] whales=${n1} discord=${n2}`);
-      } catch (e) {
-        // silencioso, no queremos tumbar el bot por señales externas
-      }
-    }, 60_000);
-
-    console.log('🤖 HunterX Bot arrancado y escuchando comandos');
-  } catch (err) {
-    console.error('❌ Error arrancando el bot:', err.stack || err);
+let bot = global.__HX_BOT__;
+if (!bot) {
+  const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+  if (!TOKEN) {
+    console.error('❌ Falta TELEGRAM_BOT_TOKEN en .env');
     process.exit(1);
   }
-})();
+
+  // Sólo POLLING (webhook lo dejamos para Render más adelante)
+  bot = new TelegramBot(TOKEN, { polling: true });
+  global.__HX_BOT__ = bot;
+
+  bot.on('polling_error', (e) => {
+    const m = String(e?.message || e);
+    // Silenciar ruidos típicos de red intermitente
+    if (
+      m.includes('EFATAL') ||
+      m.includes('ETIMEDOUT') ||
+      m.includes('ECONNRESET') ||
+      m.includes('ECONNABORTED') ||
+      m.includes('ENOTFOUND')
+    ) {
+      console.log('🌐 [polling] aviso:', m);
+    } else {
+      console.error('❌ [polling_error]', m);
+    }
+  });
+
+  console.log('🛰️ [TG] Modo: POLLING');
+}
+
+/* ────────────────────────────────────────────────────────────────────────── */
+/* Menú de comandos (slash)                                                  */
+/* ────────────────────────────────────────────────────────────────────────── */
+async function setSlashMenu() {
+  const commands = [
+    { command: 'health',    description: 'Conexiones activas' },
+    { command: 'autosniper',description: 'Activar sniper automático' },
+    { command: 'real',      description: 'Modo trading REAL' },
+    { command: 'demo',      description: 'Modo DEMO (simulación)' },
+    { command: 'stop',      description: 'Detener sniper' },
+    { command: 'wallet',    description: 'Ver posiciones abiertas' },
+    { command: 'registro',  description: 'Ver posiciones cerradas' },
+    { command: 'discord',   description: 'Tendencias en Discord' },
+    { command: 'ajustes',   description: 'Configurar sniper' },
+    { command: 'mensaje',   description: 'Ayuda / panel' },
+  ];
+  try {
+    await bot.setMyCommands(commands);
+    console.log('🟦 [Slash] comandos seteados');
+  } catch (e) {
+    console.error('❌ setMyCommands:', e?.message || e);
+  }
+}
+
+/* ────────────────────────────────────────────────────────────────────────── */
+/* Limpieza de reply-keyboards heredados                                     */
+/* (evita el teclado gris abajo; throttle 60s por chat para no spamear)      */
+/* ────────────────────────────────────────────────────────────────────────── */
+bot._kbCleanAt = bot._kbCleanAt || {};
+bot.on('message', async (msg) => {
+  try {
+    if (msg.via_bot || msg.reply_to_message) return;
+    const chatId = msg.chat.id;
+    const last = bot._kbCleanAt[chatId] || 0;
+    if (Date.now() - last < 60_000) return;
+    await bot.sendMessage(chatId, ' ', { reply_markup: { remove_keyboard: true } });
+    bot._kbCleanAt[chatId] = Date.now();
+  } catch { /* noop */ }
+});
+
+/* ────────────────────────────────────────────────────────────────────────── */
+/* Registro de handlers (explícitos)                                         */
+/* ────────────────────────────────────────────────────────────────────────── */
+if (!global.__HX_HANDLERS_REGISTERED__) {
+  console.log('🔧 Iniciando bot…');
+
+  try {
+    registerAjustes(bot, { quickNodeClient, phantomClient });
+    console.log('✅ Handler cargado: ajustes.js');
+  } catch (e) {
+    console.error('❌ ajustes:', e?.message || e);
+  }
+
+  try {
+    registerAutoSniper(bot, { quickNodeClient, phantomClient, trading });
+    console.log('✅ Handler cargado: autoSniper.js');
+  } catch (e) {
+    console.error('❌ autoSniper:', e?.message || e);
+  }
+
+  try {
+    registerWallet(bot, { quickNodeClient, phantomClient, trading });
+    console.log('✅ Handler cargado: wallet.js');
+  } catch (e) {
+    console.error('❌ wallet:', e?.message || e);
+  }
+
+  try {
+    registerRegistro(bot, { trading });
+    console.log('✅ Handler cargado: registro.js');
+  } catch (e) {
+    console.error('❌ registro:', e?.message || e);
+  }
+
+  try {
+    registerMensaje(bot);
+    console.log('✅ Handler cargado: mensaje.js');
+  } catch (e) {
+    console.error('❌ mensaje:', e?.message || e);
+  }
+
+  try {
+    registerHealth(bot, { quickNodeClient, phantomClient });
+    console.log('✅ Handler cargado: health.js');
+  } catch (e) {
+    console.error('❌ health:', e?.message || e);
+  }
+
+  await setSlashMenu();
+
+  global.__HX_HANDLERS_REGISTERED__ = true;
+  console.log('🤖 HunterX Bot arrancado y escuchando comandos');
+} else {
+  console.log('⚠️ Handlers ya estaban registrados (evito duplicar)');
+}
+
+/* ────────────────────────────────────────────────────────────────────────── */
+/* Shortcuts opcionales                                                      */
+/* ────────────────────────────────────────────────────────────────────────── */
+// Si querés que /discord sólo devuelva el link (sin handler dedicado):
+bot.onText(/^\/discord$/, (msg) => {
+  bot.sendMessage(
+    msg.chat.id,
+    '👾 Discord tendencias: https://discord.gg/tu-invite',
+    { disable_web_page_preview: true }
+  ).catch(()=>{});
+});

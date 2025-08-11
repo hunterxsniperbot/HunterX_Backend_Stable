@@ -1,493 +1,331 @@
-// src/commands/autoSniper.js — HunterX AutoSniper (Sheets A–Z + Supabase)
-// - /autosniper, /stop, /debug
-// - Enriquecimiento intel, Guard (hard/soft), Anti-FOMO (45s), Slippage dinámico
-// - Logs de BUY y SELL con 26 columnas A..Z (Sheets) + upsert Supabase (public.trades)
+// src/commands/autoSniper.js — AutoSniper FULL (strict/turbo + GIVEBACK ladder + SL por IA + ventanas prioritarias)
+// - Escanea 24/7. En ventanas 9–12 / 13–16 / 17–20 (UTC−3) baja el intervalo (prioridad).
+// - Entradas por perfil (strict/turbo). En strict aplica puertas de seguridad más duras.
+// - Stop-Ladder (GIVEBACK): venta 100% cuando cae hasta backToPct tras haber tocado triggerUpPct.
+// - Stop Loss duro SOLO si IA marca scam (bot._riskFlags[uid][mint]?.isScam === true).
+// - Totalmente separado DEMO vs REAL; las ventas reales llaman a phantomClient, las demo son MOCK.
 
-import { enrichMint, getSolUsd } from '../services/intel.js';
-import { canBuyToken } from '../services/guard.js';
-import { computeDynamicSlippageBps } from '../services/slippage.js';
+import trading from '../services/trading.js';
 
-const MIN_AGE_SECONDS = 45;   // Anti-FOMO (no entrar antes de 45s del par)
-const SOL_MINT = 'So11111111111111111111111111111111111111112';
+const SCAN_MS_NORMAL   = 15000;  // 15s fuera de ventana
+const SCAN_MS_PRIORITY = 5000;   // 5s dentro de ventana
+const LOCAL_UTC_OFFSET = -3;     // UTC−03:00 (Argentina)
 
-// Reglas Stop-Profit (gain = priceNow/entry)
-const stopProfitRules = [
-  { target: 1.00, sellFrac: 0.30 },
-  { target: 2.50, sellFrac: 0.25 },
-  { target: 5.00, sellFrac: 0.20 },
-  { target: 7.50, sellFrac: 0.30 },
-  { target:10.00, sellFrac: 0.40 },
-  { target:20.00, sellFrac: 0.80 },
+const PRIORITY_WINDOWS = [
+  { start:  9, end: 12 }, // 9–12
+  { start: 13, end: 16 }, // 13–16
+  { start: 17, end: 20 }, // 17–20
 ];
 
-// ——— Encabezados A..Z (Sheets) ———
-const HEADERS_AZ = [
-  'timestamp_iso','datetime_local','user_id','mode','type','token','mint',
-  'amount_usd','qty_tokens','entry_price_usd','exit_price_usd','slippage_pct',
-  'tx','src','age_min','liq_sol','fdv_usd','holders','vol_usd_min',
-  'guard_mode','guard_flags','whale_signal','discord_signal','intel_score',
-  'pnl_usd','pnl_pct'
+// STOP LADDER por defecto (tu pedido)
+const DEFAULT_STOP_LADDER = [
+  { triggerUpPct: 100,  backToPct:  30,  sellPct: 100 },
+  { triggerUpPct: 250,  backToPct: 125,  sellPct: 100 },
+  { triggerUpPct: 500,  backToPct: 200,  sellPct: 100 },
+  { triggerUpPct: 750,  backToPct: 300,  sellPct: 100 },
+  { triggerUpPct: 1000, backToPct: 400,  sellPct: 100 },
+  { triggerUpPct: 2000, backToPct: 800,  sellPct: 100 },
 ];
 
-const TZ = 'America/Argentina/Buenos_Aires';
+// Perfil STRICT (más filtros); TURBO más laxo
+const STRICT = {
+  minLiquidityUsd: 40000,
+  minHolders: 200,
+  maxTop1Pct: 10,
+  maxTop10Pct: 55,
+  minVol5m: 25000,
+  minTxPerMin: 25,
+  minUniqueBuyersMin: 12,
+  maxSpreadPct: 0.8,
+  maxImpact100Pct: 2.0,
+  maxRetracePct: 35,
+  minBuyRatioPct: 65
+};
 
-// ——— Helpers Sheets ———
-function getAppendCompat(sheetsClient) {
-  if (!sheetsClient) return null;
-  if (typeof sheetsClient.appendRow === 'function') {
-    return async (row, opts={}) => {
-      try { await sheetsClient.appendRow(row, opts); }
-      catch { await sheetsClient.appendRow(row); }
-    };
-  }
-  if (typeof sheetsClient === 'function') {
-    return async (row, opts={}) => {
-      try { await sheetsClient(row, opts); }
-      catch { await sheetsClient(row); }
-    };
-  }
-  return null;
+const TURBO = {
+  minLiquidityUsd: 15000,
+  minHolders: 50,
+  maxTop1Pct: 20,
+  maxTop10Pct: 70,
+  minVol5m: 8000,
+  minTxPerMin: 8,
+  minUniqueBuyersMin: 4,
+  maxSpreadPct: 1.4,
+  maxImpact100Pct: 4.0,
+  maxRetracePct: 45,
+  minBuyRatioPct: 58
+};
+
+function safeNumber(n, def=null){ n = Number(n); return Number.isFinite(n) ? n : def; }
+
+function localHourUtcMinus3(d=new Date()){
+  // Ajuste simple: UTC hora + (-3)
+  const h = d.getUTCHours() + LOCAL_UTC_OFFSET;
+  return (h + 24) % 24;
 }
 
-async function ensureHeadersIfPossible(sheetsClient) {
-  const append = getAppendCompat(sheetsClient);
-  if (!append) return;
-  try {
-    await append(HEADERS_AZ, { sheetName: 'DEMO', ensureHeader: true, headers: HEADERS_AZ });
-    await append(HEADERS_AZ, { sheetName: 'REAL', ensureHeader: true, headers: HEADERS_AZ });
-  } catch {
-    try { await append(HEADERS_AZ, { ensureHeader: true, headers: HEADERS_AZ }); } catch {}
+function inPriorityWindow(now=new Date()){
+  const h = localHourUtcMinus3(now);
+  return PRIORITY_WINDOWS.some(w => h >= w.start && h < w.end);
+}
+
+function baseSafety(cand, profile){
+  const P = profile === 'strict' ? STRICT : TURBO;
+  const L  = safeNumber(cand.metrics?.liquidity_usd);
+  const H  = safeNumber(cand.metrics?.holders);
+  const S  = safeNumber(cand.metrics?.spread_pct);
+  const I100 = safeNumber(cand.metrics?.priceImpact100_pct);
+  const T1 = safeNumber(cand.metrics?.top1_pct);
+  const T10= safeNumber(cand.metrics?.top10_pct);
+  const V5 = safeNumber(cand.metrics?.vol5m_usd);
+  const TX = safeNumber(cand.metrics?.tx_per_min);
+  const UB = safeNumber(cand.metrics?.unique_buyers_min);
+  const LP = safeNumber(cand.metrics?.lp_lock_or_burn_pct);
+
+  if (L != null  && L  < P.minLiquidityUsd) return {ok:false, why:'liquidez baja'};
+  if (H != null  && H  < P.minHolders)      return {ok:false, why:'holders bajos'};
+  if (T1!= null  && T1 > P.maxTop1Pct)      return {ok:false, why:'top1 concentrado'};
+  if (T10!= null && T10> P.maxTop10Pct)     return {ok:false, why:'top10 concentrado'};
+  if (S != null  && S  > P.maxSpreadPct)    return {ok:false, why:'spread alto'};
+  if (I100!=null && I100> P.maxImpact100Pct)return {ok:false, why:'impacto $100 alto'};
+  if (V5!= null  && V5 < P.minVol5m)        return {ok:false, why:'vol 5m bajo'};
+  if (TX!= null  && TX < P.minTxPerMin)     return {ok:false, why:'tx/min bajo'};
+  if (UB!= null  && UB < P.minUniqueBuyersMin) return {ok:false, why:'buyers/min bajo'};
+  if (LP!= null  && LP < 90)                return {ok:false, why:'LP lock/burn <90%'};
+  return {ok:true};
+}
+
+function momentumGate(intel, profile){
+  const P = profile === 'strict' ? STRICT : TURBO;
+  const retr = safeNumber(intel?.retracePct);
+  const buyR = safeNumber(intel?.buyRatioPct);
+  const hhhl = !!intel?.hhhl;
+  if (!hhhl) return {ok:false, why:'sin HH/HL'};
+  if (retr!=null && retr > P.maxRetracePct) return {ok:false, why:'retroceso alto'};
+  if (buyR!=null && buyR < P.minBuyRatioPct) return {ok:false, why:'buy ratio bajo'};
+  return {ok:true};
+}
+
+function decideEntry({cand, intel, ageSec, baseSizeUsd, profile}){
+  const s = baseSafety(cand, profile);
+  if (!s.ok) return { action:'block', reason:s.why };
+
+  const slipBase = profile === 'strict' ? 0.8 : 1.0; // %
+  if (ageSec != null && ageSec < 60) {
+    const m = momentumGate(intel, profile);
+    if (!m.ok) return { action:'block', reason:`early ${m.why}` };
+    return { action:'probe', sizePct: 0.2, slippagePct: Math.min(1.2, slipBase+0.4) };
   }
+  const m = momentumGate(intel, profile);
+  if (m.ok) return { action:'full', sizePct: 1.0, slippagePct: slipBase };
+  return { action:'probe', sizePct: 0.3, slippagePct: slipBase };
 }
 
-function nowRowPrefix(uid, mode) {
-  const d = new Date();
-  return [
-    d.toISOString(),                               // A timestamp_iso
-    d.toLocaleString('es-AR', { timeZone: TZ }),   // B datetime_local
-    String(uid),                                   // C user_id
-    mode                                           // D mode
-  ];
-}
+export default function registerAutoSniper(bot, { quickNodeClient, phantomClient }) {
+  // stores separados
+  bot._asPositionsDemo = bot._asPositionsDemo || {};
+  bot._asPositionsReal = bot._asPositionsReal || {};
+  bot._asLoops         = bot._asLoops         || {};
+  bot._riskFlags       = bot._riskFlags       || {}; // IA puede marcar scam: bot._riskFlags[uid][mint] = { isScam:true }
 
-// ——————————————————————————————————————————————————————
+  // settings por usuario (si no está /ajustes, uso .env)
+  bot.getUserSettings = bot.getUserSettings || ((uid) => ({
+    profile: (process.env.PROFILE || 'strict').toLowerCase(),
+    baseDemo: Number(process.env.SNIPER_BASE_DEMO_USD || 100),
+    baseReal: Number(process.env.SNIPER_BASE_REAL_USD || 100),
+  }));
 
-export default function registerAutoSniper(bot, {
-  quickNodeClient,
-  phantomClient,
-  sheetsClient,
-  supabaseClient
-}) {
+  // escalera por usuario (si no hay, default)
+  bot._stopLadder = bot._stopLadder || {};
 
-  // /autosniper — arranca loop
-  bot.onText(/\/autosniper/, async (msg) => {
+  bot.onText(/^\/autosniper$/, async (msg) => {
     const chatId = msg.chat.id;
     const uid    = String(msg.from.id);
 
-    // limpiar interval previo
-    if (bot._intervals?.[uid]) {
-      clearInterval(bot._intervals[uid]);
-      delete bot._intervals[uid];
+    if (bot._asLoops[uid]) {
+      clearInterval(bot._asLoops[uid]);
+      delete bot._asLoops[uid];
+      return bot.sendMessage(chatId, '🟥 *AutoSniper detenido*', { parse_mode:'Markdown' });
     }
 
-    // config monto
-    const cfgAmount = bot.sniperConfig?.[uid]?.monto;
-    const envAmount = parseFloat(process.env.FIXED_TRADE_AMOUNT);
-    const defaultAmount = 25;
-    const montoCfg = (Number.isFinite(cfgAmount) && cfgAmount > 0)
-      ? cfgAmount
-      : (Number.isFinite(envAmount) && envAmount > 0)
-      ? envAmount
-      : defaultAmount;
+    // iniciar
+    bot._asPositionsDemo[uid] = bot._asPositionsDemo[uid] || []; // [{mint, symbol, qty, avg, highest, tps:{}, ...}]
+    bot._asPositionsReal[uid] = bot._asPositionsReal[uid] || [];
 
-    const scanMs    = bot.sniperConfig?.[uid]?.scanInterval ?? 15_000;
-    const modeStr   = bot.realMode?.[uid] ? 'REAL' : (bot.demoMode?.[uid] ? 'DEMO' : 'DEMO');
-    const guardMode = bot._guardMode?.[uid] || 'hard';
-    const guardOn   = (bot._guardEnabled?.[uid] !== undefined) ? !!bot._guardEnabled[uid] : true;
-
-    // asegurar headers
-    await ensureHeadersIfPossible(sheetsClient).catch(()=>{});
-
-    await bot.sendMessage(
-      chatId,
-      `🤖 *SNIPER AUTOMÁTICO ACTIVADO*\n\n` +
-      `⏱️ Scan: ${(scanMs/1000)|0}s\n` +
-      `💰 Monto por operación: $${Number(montoCfg).toFixed(2)}\n` +
-      `🛡️ Guard: ${guardOn ? (guardMode === 'hard' ? 'HARD (bloquea)' : 'SOFT (avisa)') : 'OFF'}\n` +
-      `🔐 Modo: ${modeStr}`,
-      { parse_mode: 'Markdown' }
-    );
-
-    bot._intervals ||= {};
-    bot._positions ||= {};
-    bot._positions[uid] = bot._positions[uid] || [];
-
-    const appendCompat = getAppendCompat(sheetsClient);
-
-    // loop
-    bot._intervals[uid] = setInterval(async () => {
+    const loop = async () => {
       try {
-        const rawTokens = await quickNodeClient.scanNewTokens();
-        const now = Date.now();
+        const settings = bot.getUserSettings(uid);
+        const profile = (settings.profile === 'turbo') ? 'turbo' : 'strict';
+        const baseDemo = Math.max(1, Number(settings.baseDemo || 100));
+        const baseReal = Math.max(1, Number(settings.baseReal || 100));
+        const ladder   = bot._stopLadder[uid] || DEFAULT_STOP_LADDER;
 
-        const candidates = (rawTokens || [])
-          .map(t => ({
-            ...t,
-            ageMinutes: t.launchTimestamp ? (now - t.launchTimestamp)/60000 : t.ageMinutes
-          }))
-          .filter(t =>
-            Number(t.ageMinutes) >= 1 &&
-            Number(t.ageMinutes) <= 5 &&
-            Number(t.metrics?.liquidity) >= 150 &&
-            Number(t.metrics?.fdv)       <= 300000 &&
-            Number(t.metrics?.holders)   <= 400 &&
-            Number(t.metrics?.volume)    >= 1500
-          );
+        // prioridad de ventana
+        const scanMs = inPriorityWindow() ? SCAN_MS_PRIORITY : SCAN_MS_NORMAL;
 
-        if (!candidates.length) return;
-
-        for (const cand of candidates) {
-          const mintAddress = cand.mint || cand.mintAddress;
-          if (!mintAddress) continue;
-
-          // enriquecer
-          const intel = await enrichMint(mintAddress).catch(()=>null);
-          if (intel) {
-            cand.symbol  = cand.symbol || intel.symbol || (mintAddress?.slice(0,6)+'…');
-            cand.priceUsd = cand.priceUsd ?? intel.priceUsd ?? cand.priceUsd;
-            cand.metrics  = cand.metrics || {};
-            cand.metrics.holders   = cand.metrics.holders   ?? intel.holders;
-            cand.metrics.liquidity = cand.metrics.liquidity ?? intel.liqSol;
-            cand.metrics.fdv       = cand.metrics.fdv       ?? intel.fdv;
-            cand.metrics.volume    = cand.metrics.volume    ?? intel.volume1mUsd;
-            cand.url               = cand.url || intel.url || cand.url;
-            cand.__intel           = intel;
-          }
-
-          // Anti-FOMO: 45s desde pairCreatedAt
-          const pairCreatedAt = intel?.pairCreatedAt || cand.pairCreatedAt || null;
-          if (pairCreatedAt) {
-            const ageSec = Math.max(0, Math.round((Date.now() - Number(pairCreatedAt)) / 1000));
-            if (ageSec < MIN_AGE_SECONDS) continue;
-          }
-
-          // Guard
-          const enabled   = (bot._guardEnabled?.[uid] !== undefined) ? !!bot._guardEnabled[uid] : true;
-          const modeGuard = bot._guardMode?.[uid] || 'hard';
-          if (enabled) {
-            const verdict = await canBuyToken(cand).catch(()=>({ ok:true, reasons:[] }));
-            if (!verdict.ok) {
-              const warn = `🛡️ Guard (${modeGuard}) — Riesgos: ${verdict.reasons.join(', ')}`;
-              if (modeGuard === 'hard') {
-                await bot.sendMessage(chatId, `⛔ ${warn}\n🪙 ${cand.symbol || mintAddress}`);
-                continue;
-              } else {
-                await bot.sendMessage(chatId, `⚠️ ${warn}\n🪙 ${cand.symbol || mintAddress}\n(se deja pasar por modo *soft*)`, { parse_mode: 'Markdown' });
-              }
-            }
-          }
-
-          // Monto + slippage
-          const cfgAmount2 = bot.sniperConfig?.[uid]?.monto;
-          const envAmount2 = parseFloat(process.env.FIXED_TRADE_AMOUNT);
-          let amountUsd = (Number.isFinite(cfgAmount2) && cfgAmount2 > 0)
-            ? cfgAmount2
-            : (Number.isFinite(envAmount2) && envAmount2 > 0)
-            ? envAmount2
-            : 25;
-
-          const solUsd = intel?.solUsd || await getSolUsd().catch(()=>null);
-          const bps    = await computeDynamicSlippageBps(bot, cand, { amountUsd, solUsd }).catch(()=>150);
-          const slippagePct = Number((bps / 100).toFixed(2));
-
-          // Comprar
-          let txHash;
-          const isDemo = bot.demoMode?.[uid] || (!bot.demoMode?.[uid] && !bot.realMode?.[uid]);
-          if (isDemo) {
-            txHash = 'MOCK_BUY_' + Date.now();
-            console.log(`(DEMO) $${amountUsd} mint ${mintAddress} slippage=${slippagePct}%`);
-          } else {
-            txHash = await phantomClient.buyToken({
-              mintAddress,
-              amountUsd,
-              slippage: slippagePct,
-              inputMint: SOL_MINT
-            });
-          }
-
-          const entry = Number(cand.priceUsd ?? cand.currentPrice ?? 0);
-          const pos = {
-            txSignature: txHash,
-            mintAddress,
-            tokenSymbol: cand.symbol,
-            entryPrice:  entry,
-            amountToken: entry ? (amountUsd / entry) : 0,
-            soldTargets: [],
-            __intel: cand.__intel || null
+        // 1) escanear nuevos candidatos
+        const found = await (quickNodeClient.scanNewTokens?.() || []);
+        for (const cand of found) {
+          // intel opcional
+          const intel = {
+            hhhl: !!cand.intel?.hhhl,
+            retracePct: safeNumber(cand.intel?.retracePct),
+            buyRatioPct: safeNumber(cand.intel?.buyRatioPct)
           };
-          bot._positions[uid].push(pos);
+          const ageSec = safeNumber(cand.metrics?.age_sec);
+          const d = decideEntry({ cand, intel, ageSec, baseSizeUsd: baseDemo, profile }); // decidimos con base demo (sólo sizing)
+          if (d.action === 'block') continue;
 
-          // Sheets: BUY (A..Z)
-          try {
-            const append = appendCompat;
-            if (append) {
-              const mode = isDemo ? 'DEMO' : 'REAL';
-              const sheetName = mode;
-              const row = [
-                ...nowRowPrefix(uid, mode),                // A..D
-                'BUY',                                     // E type
-                cand.symbol || '',                         // F token
-                mintAddress,                               // G mint
-                Number(amountUsd) || '',                   // H amount_usd
-                Number(pos.amountToken) || '',             // I qty_tokens
-                Number(entry) || '',                       // J entry_price_usd
-                '',                                        // K exit_price_usd
-                Number(slippagePct) || '',                 // L slippage_pct
-                txHash,                                    // M tx
-                'MARKET',                                  // N src
-                Number(cand.ageMinutes) || '',             // O age_min
-                Number(cand.metrics?.liquidity) || '',     // P liq_sol
-                Number(cand.metrics?.fdv) || '',           // Q fdv_usd
-                Number(cand.metrics?.holders) || '',       // R holders
-                Number(cand.metrics?.volume) || '',        // S vol_usd_min
-                (bot._guardMode?.[uid] || 'hard'),         // T guard_mode
-                (cand.__intel?.risk?.flags || []).join('|') || '', // U guard_flags
-                Number(cand.__intel?.whaleScore ?? 0) || 0,         // V whale_signal
-                Number(cand.__intel?.discordScore ?? 0) || 0,       // W discord_signal
-                Number(cand.__intel?.intelScore ?? 0) || 0,         // X intel_score
-                '',                                        // Y pnl_usd
-                ''                                         // Z pnl_pct
-              ];
-              await append(row, { sheetName, ensureHeader: true, headers: HEADERS_AZ });
-            }
-          } catch (e) {
-            console.error('[Sheets] compra error:', e?.message || e);
-          }
+          // DEMO compra
+          await doBuy({
+            mode: 'DEMO', uid, bot, phantomClient,
+            mint: cand.mint, symbol: cand.symbol || (cand.mint ? cand.mint.slice(0,6)+'…' : '—'),
+            amountUsd: Math.round(baseDemo * d.sizePct),
+            slippagePct: d.slippagePct
+          });
 
-          // Supabase: BUY
-          try {
-            await supabaseClient.upsertTrade({
-              fecha_hora: new Date().toISOString(),
-              mode: isDemo ? 'DEMO' : 'REAL',
-              token: cand.symbol || '',
-              mint: mintAddress,
-              entrada_usd: Number(entry) || null,
-              salida_usd: null,
-              inversion_usd: Number(amountUsd) || null,
-              pnl_usd: null,
-              pnl_pct: null,
-              slippage_pct: Number(slippagePct) || null,
-              volumen_24h_usd: Number(cand.metrics?.volume) || null,
-              liquidez_usd: Number(cand.metrics?.liquidity) || null,
-              holders: Number(cand.metrics?.holders) || null,
-              fdv_usd: Number(cand.metrics?.fdv) || null,
-              marketcap_usd: null,
-              red: 'Solana',
-              fuente: 'MARKET',
-              url: cand.url || null,
-              tx: txHash,
-              extra: cand.__intel ? JSON.stringify(cand.__intel) : null
+          // Si querés activar REAL con mismo cand (cuando tengas saldo), podés clonar con baseReal:
+          // await doBuy({ mode: 'REAL', uid, bot, phantomClient, mint: cand.mint, symbol: cand.symbol, amountUsd: Math.round(baseReal * d.sizePct), slippagePct: d.slippagePct });
+        }
+
+        // 2) gestionar salidas (DEMO y REAL)
+        await manageAllExits({ bot, uid, mode: 'DEMO', store: bot._asPositionsDemo[uid], phantomClient, ladder });
+        await manageAllExits({ bot, uid, mode: 'REAL', store: bot._asPositionsReal[uid], phantomClient, ladder });
+
+        // reprogramar loop con el intervalo dinámico
+        bot._asLoops[uid] = setTimeout(loop, scanMs);
+      } catch (e) {
+        // en caso de error, reintentar en normal
+        bot._asLoops[uid] = setTimeout(loop, SCAN_MS_NORMAL);
+      }
+    };
+
+    bot._asLoops[uid] = setTimeout(loop, 100); // arranque rápido
+    bot.sendMessage(chatId, `🟩 *AutoSniper ACTIVADO*\nVentanas prioritarias: 9–12 / 13–16 / 17–20 UTC−3\nPerfil: *${(bot.getUserSettings(uid).profile||'strict').toUpperCase()}*`, { parse_mode:'Markdown' });
+  });
+}
+
+// ——— helpers de buy/sell/qty ———
+
+async function doBuy({ mode, uid, bot, phantomClient, mint, symbol, amountUsd, slippagePct }) {
+  const store = mode === 'REAL' ? (bot._asPositionsReal[uid] ||= []) : (bot._asPositionsDemo[uid] ||= []);
+  const price = await safeGetPrice(bot, mint, symbol);
+  if (!price) return;
+
+  const qty = amountUsd / price;
+  const tx = mode === 'REAL'
+    ? await phantomClient.buyToken({ mint, amountUsd, slippagePct }).catch(()=>({ ok:false }))
+    : { ok:true, txid:'MOCK_BUY_'+Date.now() };
+
+  if (!tx?.ok) return;
+
+  const pos = store.find(x => x.mint === mint);
+  if (!pos) {
+    store.push({ mint, symbol, qty, avg: price, highest: price, tps: {} });
+  } else {
+    const newQty = pos.qty + qty;
+    pos.avg = (pos.avg*pos.qty + price*qty) / newQty;
+    pos.qty = newQty;
+    pos.highest = Math.max(pos.highest, price);
+  }
+
+  await trading.logTrade({
+    mode, type:'buy', token:symbol, mint,
+    inversion_usd: amountUsd, entrada_usd: price, slippage_pct: slippagePct,
+    fuente: 'AutoSniper'
+  });
+}
+
+function dropQty(store, mint, qty){
+  const i = store.findIndex(x => x.mint === mint);
+  if (i < 0) return;
+  const p = store[i];
+  p.qty = Math.max(0, p.qty - qty);
+  if (p.qty === 0) store.splice(i,1);
+}
+
+async function execSell({ mode, phantomClient, mint, amountToken, slippagePct }){
+  if (mode === 'REAL') {
+    try {
+      const r = await phantomClient.sellToken({ mint, amountToken, slippagePct });
+      return { ok:true, txid: r?.txid || 'REAL_SELL_'+Date.now() };
+    } catch { return { ok:false }; }
+  } else {
+    return { ok:true, txid: 'MOCK_SELL_'+Date.now() };
+  }
+}
+
+async function safeGetPrice(bot, mint, symbol){
+  try {
+    return await bot.quickNodeClient?.getPrice?.(mint || symbol).catch(()=>null);
+  } catch { return null; }
+}
+
+// ——— gestión de salidas sobre todas las posiciones ———
+
+async function manageAllExits({ bot, uid, mode, store, phantomClient, ladder }){
+  if (!Array.isArray(store) || store.length === 0) return;
+  for (const p of [...store]) { // copiar por si mutamos
+    const cur = await safeGetPrice(bot, p.mint, p.symbol);
+    if (!cur) continue;
+    p.highest = Math.max(p.highest || cur, cur);
+    await manageExits({ bot, uid, mode, store, p, cur, phantomClient, ladder });
+  }
+}
+
+// ——— AQUI VA EL BLOQUE CON SL IA + GIVEBACK LADDER ———
+
+async function manageExits({ bot, uid, mode, store, p, cur, phantomClient, ladder }){
+  // 1) Stop Loss SOLO si IA marca scam
+  const risk = (bot._riskFlags?.[uid]?.[p.mint]) || null;
+  if (risk?.isScam) {
+    const pnlPct = p.avg > 0 ? ((cur - p.avg) / p.avg) * 100 : 0;
+    const SL_HARD = Number(process.env.SL_IA_SCAM_PCT || -12); // por ej. -12%
+    if (pnlPct <= SL_HARD) {
+      const sold = await execSell({ mode, phantomClient, mint: p.mint, amountToken: p.qty, slippagePct: 1.2 });
+      if (sold.ok) {
+        await trading.logTrade({
+          mode, type:'sell', token:p.symbol, mint:p.mint,
+          salida_usd: cur, inversion_usd: p.avg*p.qty,
+          pnl_usd: (cur - p.avg)*p.qty, pnl_pct: pnlPct,
+          fuente:'AutoSniper', extra:{ reason:'SL_IA_SCAM', txid: sold.txid }
+        });
+        dropQty(store, p.mint, p.qty);
+        return;
+      }
+    }
+  }
+
+  // 2) GIVEBACK LADDER (venta 100% cuando cae a backTo tras alcanzar trigger)
+  {
+    const rules = (ladder && ladder.length) ? ladder : DEFAULT_STOP_LADDER;
+    if (!p._gbApplied) p._gbApplied = {};
+
+    const pnlPct = p.avg > 0 ? ((cur - p.avg) / p.avg) * 100 : 0;
+    const peakPct = p.highest > 0 ? ((p.highest - p.avg) / p.avg) * 100 : 0;
+
+    for (const r of rules) {
+      const key = `${r.triggerUpPct}_${r.backToPct}_${r.sellPct}`;
+      if (p._gbApplied[key]) continue;
+      if (peakPct >= r.triggerUpPct && pnlPct <= r.backToPct) {
+        const sellQty = p.qty * (r.sellPct / 100);
+        if (sellQty > 0) {
+          const sold = await execSell({ mode, phantomClient, mint: p.mint, amountToken: sellQty, slippagePct: 0.8 });
+          if (sold.ok) {
+            dropQty(store, p.mint, sellQty);
+            p._gbApplied[key] = true;
+            await trading.logTrade({
+              mode, type:'sell', token:p.symbol, mint:p.mint,
+              salida_usd: cur, inversion_usd: p.avg*sellQty,
+              pnl_usd: (cur - p.avg)*sellQty, pnl_pct: pnlPct,
+              fuente:'AutoSniper', extra:{ reason:`GIVEBACK ${r.triggerUpPct}->${r.backToPct} sell ${r.sellPct}%`, txid: sold.txid }
             });
-          } catch (e) {
-            console.error('[Supabase] BUY error:', e?.message || e);
           }
-
-          // Noti
-          const modeNow = isDemo ? 'DEMO' : 'REAL';
-          await bot.sendMessage(
-            chatId,
-            `✅ *COMPRA EJECUTADA ${modeNow}*\n` +
-            `🪙 ${cand.symbol || mintAddress}\n` +
-            `💵 Monto: $${amountUsd.toFixed(2)}\n` +
-            `📥 Entrada: ${entry || '–'}\n` +
-            `💸 Slippage: ${slippagePct}%\n` +
-            (cand.url ? `🔗 ${cand.url}\n` : '') +
-            `🔐 TX: \`${txHash}\``,
-            { parse_mode: 'Markdown' }
-          );
         }
-
-      } catch (err) {
-        console.error(`❌ Error en sniper loop [${uid}]:`, err);
       }
-    }, scanMs);
-
-    // Monitor Stop-Profit global
-    if (!bot._stopProfitInterval) {
-      bot._stopProfitInterval = setInterval(async () => {
-        try {
-          const positionsByUser = bot._positions || {};
-          const userIds = Object.keys(positionsByUser);
-
-          for (const u of userIds) {
-            const chatIdU = Number(u);
-            const positions = positionsByUser[u] || [];
-            const appendU = getAppendCompat(sheetsClient);
-
-            for (const pos of positions) {
-              const mint = pos.mintAddress || pos.tokenMint || null;
-              let priceNow = null;
-              try { priceNow = await quickNodeClient.getPrice(mint ?? pos.tokenSymbol); } catch {}
-              const entry = Number(pos.entryPrice);
-              if (!priceNow || !entry) continue;
-
-              const gain = Number(priceNow) / entry;
-              let soldInThisCycle = false;
-
-              for (const rule of stopProfitRules) {
-                if (pos.soldTargets?.includes(rule.target)) continue;
-                if (gain < rule.target) continue;
-
-                const percent = Math.max(0, Math.min(100, Math.round(rule.sellFrac * 100)));
-                let txSell = 'MOCK_SELL_' + Date.now();
-
-                try {
-                  const isDemoU = bot.demoMode?.[u] || (!bot.demoMode?.[u] && !bot.realMode?.[u]);
-                  if (!isDemoU) {
-                    txSell = await phantomClient.sellToken({
-                      buyTxSignature: pos.txSignature,
-                      percent
-                    });
-                  }
-                } catch (e) {
-                  console.error('[SELL] error phantomClient.sellToken:', e?.message || e);
-                  continue;
-                }
-
-                // calcular porción y PnL
-                const sellFrac = Math.max(0, Math.min(1, rule.sellFrac));
-                const sellQty  = Number(pos.amountToken || 0) * sellFrac;
-                const revenue  = sellQty * Number(priceNow);
-                const cost     = sellQty * Number(entry);
-                const pnlUsd   = (Number.isFinite(revenue) && Number.isFinite(cost)) ? (revenue - cost) : null;
-                const pnlPct   = (entry > 0) ? ((Number(priceNow)/entry - 1)*100) : null;
-
-                // actualizar cantidad remanente
-                pos.amountToken = Math.max(0, Number(pos.amountToken || 0) - sellQty);
-
-                // Sheets: SELL (A..Z)
-                try {
-                  if (appendU) {
-                    const isDemoU = bot.demoMode?.[u] || (!bot.demoMode?.[u] && !bot.realMode?.[u]);
-                    const mode = isDemoU ? 'DEMO' : 'REAL';
-                    const sheetName = mode;
-                    const row = [
-                      ...nowRowPrefix(u, mode),                 // A..D
-                      `SELL_${Math.round(rule.target*100)}%`,  // E type
-                      pos.tokenSymbol || pos.mintAddress || '',// F token
-                      pos.mintAddress || '',                   // G mint
-                      '',                                      // H amount_usd
-                      Number(sellQty) || '',                   // I qty_tokens
-                      Number(entry) || '',                     // J entry_price_usd
-                      Number(priceNow) || '',                  // K exit_price_usd
-                      '',                                      // L slippage_pct
-                      txSell,                                  // M tx
-                      'MARKET',                                // N src
-                      '', '', '', '', '',                      // O..S vacíos en venta
-                      (bot._guardMode?.[u] || 'hard'),         // T guard_mode
-                      '',                                      // U guard_flags
-                      Number(pos.__intel?.whaleScore ?? 0) || 0,    // V
-                      Number(pos.__intel?.discordScore ?? 0) || 0,  // W
-                      Number(pos.__intel?.intelScore ?? 0) || 0,    // X
-                      Number.isFinite(pnlUsd) ? Number(pnlUsd) : '',// Y
-                      Number.isFinite(pnlPct) ? Number(pnlPct) : '' // Z
-                    ];
-                    await appendU(row, { sheetName, ensureHeader: true, headers: HEADERS_AZ });
-                  }
-                } catch (e) {
-                  console.error('[Sheets] venta error:', e?.message || e);
-                }
-
-                // Supabase: SELL
-                try {
-                  const isDemoU = bot.demoMode?.[u] || (!bot.demoMode?.[u] && !bot.realMode?.[u]);
-                  await supabaseClient.upsertTrade({
-                    fecha_hora: new Date().toISOString(),
-                    mode: isDemoU ? 'DEMO' : 'REAL',
-                    token: pos.tokenSymbol || pos.mintAddress || '',
-                    mint: pos.mintAddress || '',
-                    entrada_usd: Number(entry) || null,
-                    salida_usd: Number(priceNow) || null,
-                    inversion_usd: null,
-                    pnl_usd: pnlUsd,
-                    pnl_pct: pnlPct,
-                    slippage_pct: null,
-                    volumen_24h_usd: null,
-                    liquidez_usd: null,
-                    holders: null,
-                    fdv_usd: null,
-                    marketcap_usd: null,
-                    red: 'Solana',
-                    fuente: 'MARKET',
-                    url: null,
-                    tx: txSell,
-                    extra: pos.__intel ? JSON.stringify(pos.__intel) : null
-                  });
-                } catch (e) {
-                  console.error('[Supabase] SELL error:', e?.message || e);
-                }
-
-                await bot.sendMessage(
-                  chatIdU,
-                  `🛑 *Stop Profit* +${(rule.target * 100).toFixed(0)}% → vendí ${percent}%\n` +
-                  `🪙 ${pos.tokenSymbol || mint}\n` +
-                  `📊 Precio: ${Number(priceNow).toFixed(6)}\n` +
-                  `🔐 TX: \`${txSell}\``,
-                  { parse_mode: 'Markdown' }
-                );
-
-                pos.soldTargets = Array.isArray(pos.soldTargets) ? pos.soldTargets : [];
-                pos.soldTargets.push(rule.target);
-                soldInThisCycle = true;
-                break;
-              }
-
-              if (soldInThisCycle) continue;
-            }
-          }
-        } catch (e) {
-          console.error('[StopProfit] monitor error:', e);
-        }
-      }, 5_000);
     }
-  });
+  }
 
-  // /stop — detiene loop y monitor
-  bot.onText(/\/stop/, async (msg) => {
-    const chatId = msg.chat.id;
-    const uid    = String(msg.from.id);
-
-    if (bot._intervals?.[uid]) {
-      clearInterval(bot._intervals[uid]);
-      delete bot._intervals[uid];
-    }
-    if (bot._stopProfitInterval) {
-      clearInterval(bot._stopProfitInterval);
-      bot._stopProfitInterval = null;
-    }
-    await bot.sendMessage(chatId, '🔴 Sniper Automático DETENIDO');
-  });
-
-  // /debug — fuerza venta (NO escribe en Sheets/Supabase)
-  bot.onText(/\/debug/, async (msg) => {
-    const chatId = msg.chat.id;
-    const uid = String(msg.from.id);
-
-    if (bot._positions && bot._positions[uid] && bot._positions[uid].length) {
-      bot._positions[uid][0].entryPrice = 0.001;
-      bot._positions[uid][0]._debugSell = true;
-
-      if (typeof quickNodeClient?.getPrice === 'function') {
-        quickNodeClient.getPrice = async () => 0.01;
-      }
-
-      await bot.sendMessage(
-        chatId,
-        '🧪 Debug ON: entryPrice=0.001, priceNow=0.01 → activará Stop-Profit en el próximo ciclo (sin escribir en Sheets/Supabase).'
-      );
-    } else {
-      await bot.sendMessage(chatId, 'No hay posiciones para debug. Primero ejecuta una compra.');
-    }
-  });
-
+  // 3) (Opcional) TP parciales/trailing — desactivados por defecto para no cruzarse con la escalera.
+  // Si querés reactivarlos, agregalos aquí después del GIVEBACK.
 }
