@@ -1,331 +1,704 @@
-// src/commands/autoSniper.js — AutoSniper FULL (strict/turbo + GIVEBACK ladder + SL por IA + ventanas prioritarias)
-// - Escanea 24/7. En ventanas 9–12 / 13–16 / 17–20 (UTC−3) baja el intervalo (prioridad).
-// - Entradas por perfil (strict/turbo). En strict aplica puertas de seguridad más duras.
-// - Stop-Ladder (GIVEBACK): venta 100% cuando cae hasta backToPct tras haber tocado triggerUpPct.
-// - Stop Loss duro SOLO si IA marca scam (bot._riskFlags[uid][mint]?.isScam === true).
-// - Totalmente separado DEMO vs REAL; las ventas reales llaman a phantomClient, las demo son MOCK.
+// src/commands/autoSniper.js — MODO TURBO PRO (Hunter X)
+// - Scanner 24/7 con franjas prioritarias (AR UTC-3)
+// - Doble/Triple validación (DexScreener + Birdeye + Solscan*)
+// - Cheques on-chain duros* (mint/freeze/upgrade/LP)  (*si tus servicios lo soportan)
+// - Pre-sim Jupiter (quote) para estimar impacto real antes de comprar
+// - Auto-tuning leve por franja prioritaria
+// - Entrada 2 fases: probe -> scale-up
+// - Giveback ladder configurable (paradas por caída desde pico)  [TU ESCALERA]
+// - SL sólo para PROBE o si IA marca scam
+// - Budget & Cooldown (límite $/hora y enfriamiento tras racha negativa)
+// - Shadow trading: en REAL, registra también DEMO_SOMBRA (logging)
+// - Monto por operación dinámico (5–2000) por modo (DEMO/REAL)
+// - Degrada elegante cuando faltan APIs/keys (no rompe)
 
-import trading from '../services/trading.js';
+import * as markets       from '../services/markets.js';     // DexScreener/Birdeye/etc
+import * as quicknode     from '../services/quicknode.js';    // on-chain opcional
+import * as trading       from '../services/trading.js';      // logTrade/logEvent
+import * as demoBank      from '../services/demoBank.js';     // simulador (si aplica)
+import * as profileStore  from '../services/profile.js';      // perfiles (si aplica)
+import * as supabase      from '../services/supabase.js';     // si querés hooks externos
 
-const SCAN_MS_NORMAL   = 15000;  // 15s fuera de ventana
-const SCAN_MS_PRIORITY = 5000;   // 5s dentro de ventana
-const LOCAL_UTC_OFFSET = -3;     // UTC−03:00 (Argentina)
+// ———————————————————————————————————————————————————————————
+// Defaults desde .env (todo opcional, con fallback sensato)
+// ———————————————————————————————————————————————————————————
+const ENV = {
+  PROFILE:                (process.env.PROFILE || 'maxseg').toLowerCase(),              // 'maxseg' | 'normal'
+  BASE_DEMO:              clampNum(process.env.SNIPER_BASE_DEMO_USD, 100, 5, 2000),
+  BASE_REAL:              clampNum(process.env.SNIPER_BASE_REAL_USD, 100, 5, 2000),
+  DOWNSCALE_REAL:         readBool(process.env.AUTO_DOWNSCALE_REAL, true),
 
-const PRIORITY_WINDOWS = [
-  { start:  9, end: 12 }, // 9–12
-  { start: 13, end: 16 }, // 13–16
-  { start: 17, end: 20 }, // 17–20
-];
+  PROBE_SL_PCT:           clampNum(process.env.PROBE_SL_PCT, 12, 5, 25),               // -5% a -25%
+  MAX_IMPACT_PCT:         clampNum(process.env.JUPITER_MAX_IMPACT_PCT, 2.0, 0.5, 10),
+  SCAN_MS:                clampNum(process.env.SCAN_INTERVAL_MS, 15000, 3000, 60000),
 
-// STOP LADDER por defecto (tu pedido)
-const DEFAULT_STOP_LADDER = [
-  { triggerUpPct: 100,  backToPct:  30,  sellPct: 100 },
-  { triggerUpPct: 250,  backToPct: 125,  sellPct: 100 },
-  { triggerUpPct: 500,  backToPct: 200,  sellPct: 100 },
-  { triggerUpPct: 750,  backToPct: 300,  sellPct: 100 },
-  { triggerUpPct: 1000, backToPct: 400,  sellPct: 100 },
-  { triggerUpPct: 2000, backToPct: 800,  sellPct: 100 },
-];
+  // Giveback ladder (TU REGLA EXACTA por default)
+  STOP_LADDER_JSON:       process.env.STOP_LADDER_JSON || JSON.stringify([
+    { triggerUpPct: 100,  backToPct: 50,  sellPct: 100 },
+    { triggerUpPct: 250,  backToPct: 125, sellPct: 100 },
+    { triggerUpPct: 500,  backToPct: 200, sellPct: 100 },
+    { triggerUpPct: 750,  backToPct: 300, sellPct: 100 },
+    { triggerUpPct: 1000, backToPct: 400, sellPct: 100 },
+    { triggerUpPct: 2000, backToPct: 800, sellPct: 100 },
+  ]),
 
-// Perfil STRICT (más filtros); TURBO más laxo
-const STRICT = {
-  minLiquidityUsd: 40000,
-  minHolders: 200,
-  maxTop1Pct: 10,
-  maxTop10Pct: 55,
-  minVol5m: 25000,
-  minTxPerMin: 25,
-  minUniqueBuyersMin: 12,
-  maxSpreadPct: 0.8,
-  maxImpact100Pct: 2.0,
-  maxRetracePct: 35,
-  minBuyRatioPct: 65
+  BUDGET_DEMO_H:          clampNum(process.env.BUDGET_DEMO_USD_PER_H, 2000, 50, 100000),
+  BUDGET_REAL_H:          clampNum(process.env.BUDGET_REAL_USD_PER_H, 500, 50, 100000),
+  CD_RED_STREAK:          clampNum(process.env.COOLDOWN_RED_STREAK, 3, 1, 10),
+  CD_MS:                  clampNum(process.env.COOLDOWN_MS, 15*60*1000, 60*1000, 24*60*60*1000),
 };
 
-const TURBO = {
-  minLiquidityUsd: 15000,
-  minHolders: 50,
-  maxTop1Pct: 20,
-  maxTop10Pct: 70,
-  minVol5m: 8000,
-  minTxPerMin: 8,
-  minUniqueBuyersMin: 4,
-  maxSpreadPct: 1.4,
-  maxImpact100Pct: 4.0,
-  maxRetracePct: 45,
-  minBuyRatioPct: 58
-};
-
-function safeNumber(n, def=null){ n = Number(n); return Number.isFinite(n) ? n : def; }
-
-function localHourUtcMinus3(d=new Date()){
-  // Ajuste simple: UTC hora + (-3)
-  const h = d.getUTCHours() + LOCAL_UTC_OFFSET;
-  return (h + 24) % 24;
-}
-
-function inPriorityWindow(now=new Date()){
-  const h = localHourUtcMinus3(now);
-  return PRIORITY_WINDOWS.some(w => h >= w.start && h < w.end);
-}
-
-function baseSafety(cand, profile){
-  const P = profile === 'strict' ? STRICT : TURBO;
-  const L  = safeNumber(cand.metrics?.liquidity_usd);
-  const H  = safeNumber(cand.metrics?.holders);
-  const S  = safeNumber(cand.metrics?.spread_pct);
-  const I100 = safeNumber(cand.metrics?.priceImpact100_pct);
-  const T1 = safeNumber(cand.metrics?.top1_pct);
-  const T10= safeNumber(cand.metrics?.top10_pct);
-  const V5 = safeNumber(cand.metrics?.vol5m_usd);
-  const TX = safeNumber(cand.metrics?.tx_per_min);
-  const UB = safeNumber(cand.metrics?.unique_buyers_min);
-  const LP = safeNumber(cand.metrics?.lp_lock_or_burn_pct);
-
-  if (L != null  && L  < P.minLiquidityUsd) return {ok:false, why:'liquidez baja'};
-  if (H != null  && H  < P.minHolders)      return {ok:false, why:'holders bajos'};
-  if (T1!= null  && T1 > P.maxTop1Pct)      return {ok:false, why:'top1 concentrado'};
-  if (T10!= null && T10> P.maxTop10Pct)     return {ok:false, why:'top10 concentrado'};
-  if (S != null  && S  > P.maxSpreadPct)    return {ok:false, why:'spread alto'};
-  if (I100!=null && I100> P.maxImpact100Pct)return {ok:false, why:'impacto $100 alto'};
-  if (V5!= null  && V5 < P.minVol5m)        return {ok:false, why:'vol 5m bajo'};
-  if (TX!= null  && TX < P.minTxPerMin)     return {ok:false, why:'tx/min bajo'};
-  if (UB!= null  && UB < P.minUniqueBuyersMin) return {ok:false, why:'buyers/min bajo'};
-  if (LP!= null  && LP < 90)                return {ok:false, why:'LP lock/burn <90%'};
-  return {ok:true};
-}
-
-function momentumGate(intel, profile){
-  const P = profile === 'strict' ? STRICT : TURBO;
-  const retr = safeNumber(intel?.retracePct);
-  const buyR = safeNumber(intel?.buyRatioPct);
-  const hhhl = !!intel?.hhhl;
-  if (!hhhl) return {ok:false, why:'sin HH/HL'};
-  if (retr!=null && retr > P.maxRetracePct) return {ok:false, why:'retroceso alto'};
-  if (buyR!=null && buyR < P.minBuyRatioPct) return {ok:false, why:'buy ratio bajo'};
-  return {ok:true};
-}
-
-function decideEntry({cand, intel, ageSec, baseSizeUsd, profile}){
-  const s = baseSafety(cand, profile);
-  if (!s.ok) return { action:'block', reason:s.why };
-
-  const slipBase = profile === 'strict' ? 0.8 : 1.0; // %
-  if (ageSec != null && ageSec < 60) {
-    const m = momentumGate(intel, profile);
-    if (!m.ok) return { action:'block', reason:`early ${m.why}` };
-    return { action:'probe', sizePct: 0.2, slippagePct: Math.min(1.2, slipBase+0.4) };
+// ———————————————————————————————————————————————————————————
+// Perfiles de seguridad (máximos por default + auto-tuning por franja)
+// ———————————————————————————————————————————————————————————
+const BASE_RULES = {
+  maxseg: {
+    minLiquidityUsd:     40000,
+    minHolders:          200,
+    maxTop1Pct:          10,
+    maxTop10Pct:         55,
+    minVol5m:            25000,
+    minTxPerMin:         25,
+    minUniqueBuyersMin:  12,
+    maxSpreadPct:        0.8,
+    maxImpact100Pct:     2.0,
+    maxRetracePct:       35,
+    minBuyRatioPct:      65,
+    requireLpLocked:     90,        // %
+  },
+  normal: {
+    minLiquidityUsd:     25000,
+    minHolders:          120,
+    maxTop1Pct:          15,
+    maxTop10Pct:         65,
+    minVol5m:            15000,
+    minTxPerMin:         15,
+    minUniqueBuyersMin:  8,
+    maxSpreadPct:        1.2,
+    maxImpact100Pct:     3.0,
+    maxRetracePct:       45,
+    minBuyRatioPct:      60,
+    requireLpLocked:     80,
   }
-  const m = momentumGate(intel, profile);
-  if (m.ok) return { action:'full', sizePct: 1.0, slippagePct: slipBase };
-  return { action:'probe', sizePct: 0.3, slippagePct: slipBase };
+};
+
+// ———————————————————————————————————————————————————————————
+// Helpers base
+// ———————————————————————————————————————————————————————————
+function clampNum(v, def, min, max) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return def;
+  return Math.max(min, Math.min(max, n));
+}
+function readBool(v, def=false) {
+  if (v == null) return def;
+  const s = String(v).toLowerCase().trim();
+  return ['1','true','yes','on'].includes(s);
+}
+function n(v, d=null){ v = Number(v); return Number.isFinite(v)?v:d; }
+function pct(a,b){ return (b>0) ? (a/b)*100 : null; }
+const sleep = (ms)=> new Promise(r=>setTimeout(r,ms));
+
+// ———————————————————————————————————————————————————————————
+// Franjas prioritarias (UTC-3): 9–12 / 13–16 / 17–20
+// No detiene el scanner fuera de franja; sólo endurece un poco umbrales.
+// ———————————————————————————————————————————————————————————
+const PRIORITY_WINDOWS = [ [9,12], [13,16], [17,20] ];
+function isPriorityNowUTC3() {
+  const now = new Date();
+  const utc = now.getUTCHours();
+  const h = (utc + 21) % 24; // UTC-3 => -3h (equivale +21h mod 24)
+  return PRIORITY_WINDOWS.some(([a,b]) => h >= a && h < b);
+}
+function tunedRules(profile){
+  const base = { ...(BASE_RULES[profile] || BASE_RULES.maxseg) };
+  if (isPriorityNowUTC3()) {
+    // leve endurecimiento: +10% a mínimos, -10% a máximos
+    base.minLiquidityUsd    = Math.round(base.minLiquidityUsd * 1.1);
+    base.minHolders         = Math.round(base.minHolders * 1.1);
+    base.minVol5m           = Math.round(base.minVol5m * 1.1);
+    base.minTxPerMin        = Math.round(base.minTxPerMin * 1.1);
+    base.minUniqueBuyersMin = Math.round(base.minUniqueBuyersMin * 1.1);
+    base.maxSpreadPct       = +(base.maxSpreadPct * 0.9).toFixed(3);
+    base.maxImpact100Pct    = +(base.maxImpact100Pct * 0.9).toFixed(3);
+    base.maxRetracePct      = Math.round(base.maxRetracePct * 0.9);
+  }
+  return base;
 }
 
-export default function registerAutoSniper(bot, { quickNodeClient, phantomClient }) {
-  // stores separados
-  bot._asPositionsDemo = bot._asPositionsDemo || {};
-  bot._asPositionsReal = bot._asPositionsReal || {};
-  bot._asLoops         = bot._asLoops         || {};
-  bot._riskFlags       = bot._riskFlags       || {}; // IA puede marcar scam: bot._riskFlags[uid][mint] = { isScam:true }
-
-  // settings por usuario (si no está /ajustes, uso .env)
-  bot.getUserSettings = bot.getUserSettings || ((uid) => ({
-    profile: (process.env.PROFILE || 'strict').toLowerCase(),
-    baseDemo: Number(process.env.SNIPER_BASE_DEMO_USD || 100),
-    baseReal: Number(process.env.SNIPER_BASE_REAL_USD || 100),
-  }));
-
-  // escalera por usuario (si no hay, default)
-  bot._stopLadder = bot._stopLadder || {};
-
-  bot.onText(/^\/autosniper$/, async (msg) => {
-    const chatId = msg.chat.id;
-    const uid    = String(msg.from.id);
-
-    if (bot._asLoops[uid]) {
-      clearInterval(bot._asLoops[uid]);
-      delete bot._asLoops[uid];
-      return bot.sendMessage(chatId, '🟥 *AutoSniper detenido*', { parse_mode:'Markdown' });
-    }
-
-    // iniciar
-    bot._asPositionsDemo[uid] = bot._asPositionsDemo[uid] || []; // [{mint, symbol, qty, avg, highest, tps:{}, ...}]
-    bot._asPositionsReal[uid] = bot._asPositionsReal[uid] || [];
-
-    const loop = async () => {
-      try {
-        const settings = bot.getUserSettings(uid);
-        const profile = (settings.profile === 'turbo') ? 'turbo' : 'strict';
-        const baseDemo = Math.max(1, Number(settings.baseDemo || 100));
-        const baseReal = Math.max(1, Number(settings.baseReal || 100));
-        const ladder   = bot._stopLadder[uid] || DEFAULT_STOP_LADDER;
-
-        // prioridad de ventana
-        const scanMs = inPriorityWindow() ? SCAN_MS_PRIORITY : SCAN_MS_NORMAL;
-
-        // 1) escanear nuevos candidatos
-        const found = await (quickNodeClient.scanNewTokens?.() || []);
-        for (const cand of found) {
-          // intel opcional
-          const intel = {
-            hhhl: !!cand.intel?.hhhl,
-            retracePct: safeNumber(cand.intel?.retracePct),
-            buyRatioPct: safeNumber(cand.intel?.buyRatioPct)
-          };
-          const ageSec = safeNumber(cand.metrics?.age_sec);
-          const d = decideEntry({ cand, intel, ageSec, baseSizeUsd: baseDemo, profile }); // decidimos con base demo (sólo sizing)
-          if (d.action === 'block') continue;
-
-          // DEMO compra
-          await doBuy({
-            mode: 'DEMO', uid, bot, phantomClient,
-            mint: cand.mint, symbol: cand.symbol || (cand.mint ? cand.mint.slice(0,6)+'…' : '—'),
-            amountUsd: Math.round(baseDemo * d.sizePct),
-            slippagePct: d.slippagePct
-          });
-
-          // Si querés activar REAL con mismo cand (cuando tengas saldo), podés clonar con baseReal:
-          // await doBuy({ mode: 'REAL', uid, bot, phantomClient, mint: cand.mint, symbol: cand.symbol, amountUsd: Math.round(baseReal * d.sizePct), slippagePct: d.slippagePct });
-        }
-
-        // 2) gestionar salidas (DEMO y REAL)
-        await manageAllExits({ bot, uid, mode: 'DEMO', store: bot._asPositionsDemo[uid], phantomClient, ladder });
-        await manageAllExits({ bot, uid, mode: 'REAL', store: bot._asPositionsReal[uid], phantomClient, ladder });
-
-        // reprogramar loop con el intervalo dinámico
-        bot._asLoops[uid] = setTimeout(loop, scanMs);
-      } catch (e) {
-        // en caso de error, reintentar en normal
-        bot._asLoops[uid] = setTimeout(loop, SCAN_MS_NORMAL);
-      }
-    };
-
-    bot._asLoops[uid] = setTimeout(loop, 100); // arranque rápido
-    bot.sendMessage(chatId, `🟩 *AutoSniper ACTIVADO*\nVentanas prioritarias: 9–12 / 13–16 / 17–20 UTC−3\nPerfil: *${(bot.getUserSettings(uid).profile||'strict').toUpperCase()}*`, { parse_mode:'Markdown' });
+// ———————————————————————————————————————————————————————————
+// Kill-switch de Sniper por usuario (tracking + cancelables)
+// ———————————————————————————————————————————————————————————
+function _getSess(bot, uid) {
+  bot._sniperSess = bot._sniperSess || {};
+  bot._sniperSess[uid] = bot._sniperSess[uid] || {
+    abort: new AbortController(),
+    timeouts: new Set(),
+    intervals: new Set(),
+  };
+  return bot._sniperSess[uid];
+}
+function _ensureAbort(bot, uid){
+  const s = _getSess(bot, uid);
+  if (!s.abort || s.abort?.signal?.aborted) s.abort = new AbortController();
+  return s.abort;
+}
+function _trackTimeout(bot, uid, id) { _getSess(bot, uid).timeouts.add(id); return id; }
+function _trackInterval(bot, uid, id) { _getSess(bot, uid).intervals.add(id); return id; }
+function _clearTracked(bot, uid) {
+  const s = _getSess(bot, uid);
+  // abortar tareas cancelables
+  try { s.abort?.abort?.(); } catch {}
+  s.abort = new AbortController();
+  // limpiar timers
+  for (const t of s.timeouts) { try { clearTimeout(t); } catch {} }
+  for (const i of s.intervals){ try { clearInterval(i); } catch {} }
+  s.timeouts.clear(); s.intervals.clear();
+}
+async function csleep(bot, uid, ms) {
+  // sleep cancelable por OFF
+  const ctrl = _ensureAbort(bot, uid);
+  return new Promise((resolve, reject) => {
+    if (ctrl.signal.aborted) return resolve();
+    const tid = setTimeout(resolve, ms);
+    _trackTimeout(bot, uid, tid);
+    const onAbort = () => { try { clearTimeout(tid); } catch {}; resolve(); };
+    ctrl.signal.addEventListener('abort', onAbort, { once:true });
   });
 }
 
-// ——— helpers de buy/sell/qty ———
+// ———————————————————————————————————————————————————————————
+// Validaciones Multi-feed (DexScreener + Birdeye + Solscan) y On-chain
+// Todos son “best-effort”: si falta un feed, no rompe.
+// ———————————————————————————————————————————————————————————
+async function multiValidate(mintOrSym, rules) {
+  const out = { ok:true, why:[], metrics:{} };
 
-async function doBuy({ mode, uid, bot, phantomClient, mint, symbol, amountUsd, slippagePct }) {
-  const store = mode === 'REAL' ? (bot._asPositionsReal[uid] ||= []) : (bot._asPositionsDemo[uid] ||= []);
-  const price = await safeGetPrice(bot, mint, symbol);
-  if (!price) return;
+  // DexScreener
+  const ds = await markets.getDexScreener?.(mintOrSym).catch(()=>null);
+  if (ds?.priceUsd) out.metrics.price_ds = n(ds.priceUsd);
+  if (ds?.liquidityUsd) out.metrics.liq_ds = n(ds.liquidityUsd);
+  if (ds?.spreadPct) out.metrics.spread_ds = n(ds.spreadPct);
+  if (ds?.vol5m) out.metrics.vol5m_ds = n(ds.vol5m);
+  if (ds?.txPerMin) out.metrics.txpm_ds = n(ds.txPerMin);
+  if (ds?.uniqueBuyersMin) out.metrics.ubuy_ds = n(ds.uniqueBuyersMin);
+  if (ds?.holders) out.metrics.holders_ds = n(ds.holders);
+  if (ds?.top1Pct) out.metrics.top1_ds = n(ds.top1Pct);
+  if (ds?.top10Pct) out.metrics.top10_ds = n(ds.top10Pct);
+  if (ds?.lpLockOrBurnPct) out.metrics.lp_ds = n(ds.lpLockOrBurnPct);
 
-  const qty = amountUsd / price;
-  const tx = mode === 'REAL'
-    ? await phantomClient.buyToken({ mint, amountUsd, slippagePct }).catch(()=>({ ok:false }))
-    : { ok:true, txid:'MOCK_BUY_'+Date.now() };
+  // Birdeye
+  const be = await markets.getBirdeye?.(mintOrSym).catch(()=>null);
+  if (be?.priceUsd) out.metrics.price_be = n(be.priceUsd);
+  if (be?.liquidityUsd) out.metrics.liq_be = n(be.liquidityUsd);
+  if (be?.spreadPct) out.metrics.spread_be = n(be.spreadPct);
+  if (be?.vol5m) out.metrics.vol5m_be = n(be.vol5m);
+  if (be?.txPerMin) out.metrics.txpm_be = n(be.txPerMin);
+  if (be?.uniqueBuyersMin) out.metrics.ubuy_be = n(be.uniqueBuyersMin);
+  if (be?.holders) out.metrics.holders_be = n(be.holders);
+  if (be?.top1Pct) out.metrics.top1_be = n(be.top1Pct);
+  if (be?.top10Pct) out.metrics.top10_be = n(be.top10Pct);
+  if (be?.lpLockOrBurnPct) out.metrics.lp_be = n(be.lpLockOrBurnPct);
 
-  if (!tx?.ok) return;
+  // Solscan (si tenés wrapper)
+  const ss = await markets.getSolscan?.(mintOrSym).catch(()=>null);
+  if (ss?.priceUsd) out.metrics.price_ss = n(ss.priceUsd);
+  if (ss?.liquidityUsd) out.metrics.liq_ss = n(ss.liquidityUsd);
+  if (ss?.holders) out.metrics.holders_ss = n(ss.holders);
+  if (ss?.lpLockOrBurnPct) out.metrics.lp_ss = n(ss.lpLockOrBurnPct);
 
-  const pos = store.find(x => x.mint === mint);
-  if (!pos) {
-    store.push({ mint, symbol, qty, avg: price, highest: price, tps: {} });
-  } else {
-    const newQty = pos.qty + qty;
-    pos.avg = (pos.avg*pos.qty + price*qty) / newQty;
-    pos.qty = newQty;
-    pos.highest = Math.max(pos.highest, price);
+  // Chequeo consistencia básica (si ambos disponibles)
+  if (out.metrics.liq_ds!=null && out.metrics.liq_be!=null) {
+    const diff = Math.abs(out.metrics.liq_ds - out.metrics.liq_be) / Math.max(1, Math.min(out.metrics.liq_ds, out.metrics.liq_be));
+    if (diff > 0.35) { out.ok=false; out.why.push('liquidez DS/BE difiere >35%'); }
   }
 
-  await trading.logTrade({
-    mode, type:'buy', token:symbol, mint,
-    inversion_usd: amountUsd, entrada_usd: price, slippage_pct: slippagePct,
-    fuente: 'AutoSniper'
-  });
-}
+  // Tomar “mejor” estimación por campo (max/avg simple)
+  const liqs = [out.metrics.liq_ds, out.metrics.liq_be, out.metrics.liq_ss].filter(x=>x!=null);
+  const prices = [out.metrics.price_ds, out.metrics.price_be, out.metrics.price_ss].filter(x=>x!=null);
+  const spreads = [out.metrics.spread_ds, out.metrics.spread_be].filter(x=>x!=null);
+  const vol5m = [out.metrics.vol5m_ds, out.metrics.vol5m_be].filter(x=>x!=null);
+  const txpm = [out.metrics.txpm_ds, out.metrics.txpm_be].filter(x=>x!=null);
+  const ubuy = [out.metrics.ubuy_ds, out.metrics.ubuy_be].filter(x=>x!=null);
+  const holders = [out.metrics.holders_ds, out.metrics.holders_be, out.metrics.holders_ss].filter(x=>x!=null);
+  const top1 = [out.metrics.top1_ds, out.metrics.top1_be].filter(x=>x!=null);
+  const top10= [out.metrics.top10_ds, out.metrics.top10_be].filter(x=>x!=null);
+  const lp   = [out.metrics.lp_ds, out.metrics.lp_be, out.metrics.lp_ss].filter(x=>x!=null);
 
-function dropQty(store, mint, qty){
-  const i = store.findIndex(x => x.mint === mint);
-  if (i < 0) return;
-  const p = store[i];
-  p.qty = Math.max(0, p.qty - qty);
-  if (p.qty === 0) store.splice(i,1);
-}
+  const m = {
+    priceUsd:         prices.length ? avg(prices) : null,
+    liquidityUsd:     liqs.length ? Math.max(...liqs) : null,
+    spreadPct:        spreads.length ? avg(spreads) : null,
+    vol5mUsd:         vol5m.length ? Math.max(...vol5m) : null,
+    txPerMin:         txpm.length ? Math.max(...txpm) : null,
+    buyersPerMin:     ubuy.length ? Math.max(...ubuy) : null,
+    holders:          holders.length ? Math.max(...holders) : null,
+    top1Pct:          top1.length ? Math.max(...top1) : null,
+    top10Pct:         top10.length ? Math.max(...top10) : null,
+    lpLockOrBurnPct:  lp.length ? Math.max(...lp) : null,
+  };
 
-async function execSell({ mode, phantomClient, mint, amountToken, slippagePct }){
-  if (mode === 'REAL') {
-    try {
-      const r = await phantomClient.sellToken({ mint, amountToken, slippagePct });
-      return { ok:true, txid: r?.txid || 'REAL_SELL_'+Date.now() };
-    } catch { return { ok:false }; }
-  } else {
-    return { ok:true, txid: 'MOCK_SELL_'+Date.now() };
+  // On-chain duro (si quicknode tiene helpers)
+  if (quicknode.getMintAuthorities) {
+    const a = await quicknode.getMintAuthorities(mintOrSym).catch(()=>null);
+    if (a?.hasMintAuthority === true) { out.ok=false; out.why.push('mint authority activa'); }
+    if (a?.hasFreezeAuthority === true) { out.ok=false; out.why.push('freeze authority activa'); }
+    if (a?.isUpgradeable === true) { out.ok=false; out.why.push('contrato upgradeable'); }
   }
-}
+  if (quicknode.getLpState) {
+    const lpst = await quicknode.getLpState(mintOrSym).catch(()=>null);
+    if (lpst?.unlockSoon === true) { out.ok=false; out.why.push('LP unlock inminente'); }
+  }
 
-async function safeGetPrice(bot, mint, symbol){
+  // Reglas duras contra métricas
+  if (m.liquidityUsd!=null && m.liquidityUsd < rules.minLiquidityUsd) { out.ok=false; out.why.push('liquidez baja'); }
+  if (m.holders!=null      && m.holders      < rules.minHolders)      { out.ok=false; out.why.push('holders bajos'); }
+  if (m.top1Pct!=null      && m.top1Pct      > rules.maxTop1Pct)       { out.ok=false; out.why.push('top1 concentrado'); }
+  if (m.top10Pct!=null     && m.top10Pct     > rules.maxTop10Pct)      { out.ok=false; out.why.push('top10 concentrado'); }
+  if (m.spreadPct!=null    && m.spreadPct    > rules.maxSpreadPct)     { out.ok=false; out.why.push('spread alto'); }
+  if (m.vol5mUsd!=null     && m.vol5mUsd     < rules.minVol5m)         { out.ok=false; out.why.push('vol 5m bajo'); }
+  if (m.txPerMin!=null     && m.txPerMin     < rules.minTxPerMin)      { out.ok=false; out.why.push('tx/min bajo'); }
+  if (m.buyersPerMin!=null && m.buyersPerMin < rules.minUniqueBuyersMin){out.ok=false; out.why.push('buyers/min bajo'); }
+  if (m.lpLockOrBurnPct!=null && m.lpLockOrBurnPct < rules.requireLpLocked) {
+    out.ok=false; out.why.push('LP lock/burn insuficiente');
+  }
+
+  out.metrics = m;
+  return out;
+}
+function avg(arr){ return arr.reduce((a,b)=>a+b,0)/arr.length; }
+
+// ———————————————————————————————————————————————————————————
+// Pre-sim Jupiter (quote). Si el impacto > tope, abortamos compra.
+// markets.getJupiterQuote(mintIn, mintOut, amountUsd, slippagePct) => { priceImpactPct, outAmountUsd }
+// Degradación elegante si no existe el servicio.
+// ———————————————————————————————————————————————————————————
+async function preSimJupiter({ mintIn, mintOut, amountUsd, slippagePct }) {
+  if (!markets.getJupiterQuote) return null;
   try {
-    return await bot.quickNodeClient?.getPrice?.(mint || symbol).catch(()=>null);
+    const q = await markets.getJupiterQuote(mintIn, mintOut, amountUsd, slippagePct);
+    if (!q) return null;
+    return {
+      priceImpactPct: n(q.priceImpactPct, null),
+      outAmountUsd:   n(q.outAmountUsd, null)
+    };
   } catch { return null; }
 }
 
-// ——— gestión de salidas sobre todas las posiciones ———
+// ———————————————————————————————————————————————————————————
+ // Entrada 2 fases (probe/full) + momentum simple opcional (intel)
+// ———————————————————————————————————————————————————————————
+function momentumGate(intel, rules){
+  // intel: { hhhl:boolean, retracePct:number, buyRatioPct:number }
+  const retr = n(intel?.retracePct, null);
+  const buyR = n(intel?.buyRatioPct, null);
+  const hhhl = !!intel?.hhhl;
 
-async function manageAllExits({ bot, uid, mode, store, phantomClient, ladder }){
-  if (!Array.isArray(store) || store.length === 0) return;
-  for (const p of [...store]) { // copiar por si mutamos
-    const cur = await safeGetPrice(bot, p.mint, p.symbol);
-    if (!cur) continue;
-    p.highest = Math.max(p.highest || cur, cur);
-    await manageExits({ bot, uid, mode, store, p, cur, phantomClient, ladder });
+  if (!hhhl) return {ok:false, why:'sin HH/HL'};
+  if (retr!=null && retr > rules.maxRetracePct)   return {ok:false, why:'retroceso alto'};
+  if (buyR!=null && buyR < rules.minBuyRatioPct)  return {ok:false, why:'buy ratio bajo'};
+  return {ok:true};
+}
+function decideEntry({ profile, intel, ageSec }) {
+  const rules = tunedRules(profile);
+  const slipBase = Math.min(0.8, rules.maxSpreadPct); // slip base ≈ spread tope
+
+  if (ageSec!=null && ageSec < 60) {
+    const m = momentumGate(intel, rules);
+    if (!m.ok) return { action:'block', reason:`early ${m.why}` };
+    return { action:'probe', sizePct: 0.2, slippagePct: Math.min(1.2, slipBase + 0.4) };
+  }
+  const m = momentumGate(intel, rules);
+  if (m.ok) return { action:'full',  sizePct: 1.0, slippagePct: slipBase };
+  return { action:'probe', sizePct: 0.3, slippagePct: slipBase };
+}
+
+// ———————————————————————————————————————————————————————————
+// Stores por usuario y modo
+// p: {mint, symbol, qty, avg, highest, lastBuyTs}
+// ———————————————————————————————————————————————————————————
+function getStore(bot, uid, mode) {
+  const key = mode === 'REAL' ? '_store_real' : '_store_demo';
+  bot[key] = bot[key] || {};
+  bot[key][uid] = bot[key][uid] || {};
+  return bot[key][uid];
+}
+function addBuyPosition(store, mint, symbol, qty, price) {
+  const p = store[mint] || { mint, symbol, qty:0, avg:0, highest:0 };
+  const totalCost = p.avg * p.qty + price * qty;
+  const newQty    = p.qty + qty;
+  p.avg     = newQty > 0 ? totalCost / newQty : 0;
+  p.qty     = newQty;
+  p.highest = Math.max(p.highest || 0, price);
+  p.lastBuyTs = Date.now();
+  store[mint] = p;
+}
+function dropQty(store, mint, qty) {
+  const p = store[mint];
+  if (!p) return;
+  p.qty = Math.max(0, p.qty - qty);
+  if (p.qty === 0) delete store[mint];
+}
+
+// ———————————————————————————————————————————————————————————
+// Budget / cooldown por usuario
+// ———————————————————————————————————————————————————————————
+function getRisk(bot, uid) {
+  bot._risk = bot._risk || {};
+  bot._risk[uid] = bot._risk[uid] || { lastHour: null, spentDemo:0, spentReal:0, redStreak:0, cooldownUntil:0 };
+  return bot._risk[uid];
+}
+function withinHourBudget(risk, mode, baseUsd) {
+  const now = new Date();
+  const hourKey = now.getUTCFullYear()+'-'+(now.getUTCMonth()+1)+'-'+now.getUTCDate()+'-'+now.getUTCHours();
+  if (risk.lastHour !== hourKey) {
+    risk.lastHour = hourKey;
+    risk.spentDemo = 0;
+    risk.spentReal = 0;
+  }
+  if (Date.now() < risk.cooldownUntil) return { ok:false, why:'cooldown activo' };
+
+  if (mode === 'DEMO') {
+    if (risk.spentDemo + baseUsd > ENV.BUDGET_DEMO_H) return { ok:false, why:'budget DEMO/h superado' };
+    return { ok:true };
+  } else {
+    if (risk.spentReal + baseUsd > ENV.BUDGET_REAL_H) return { ok:false, why:'budget REAL/h superado' };
+    return { ok:true };
+  }
+}
+function registerSpend(risk, mode, usd) {
+  if (mode === 'DEMO') risk.spentDemo += usd; else risk.spentReal += usd;
+}
+function registerPnL(bot, uid, pnlUsd) {
+  const r = getRisk(bot, uid);
+  if (pnlUsd < 0) r.redStreak += 1; else r.redStreak = 0;
+  if (r.redStreak >= ENV.CD_RED_STREAK) {
+    r.cooldownUntil = Date.now() + ENV.CD_MS;
+    r.redStreak = 0;
   }
 }
 
-// ——— AQUI VA EL BLOQUE CON SL IA + GIVEBACK LADDER ———
+// ———————————————————————————————————————————————————————————
+// Exec buys / sells (REAL ↔ Phantom / DEMO ↔ demoBank) + log
+// ———————————————————————————————————————————————————————————
+async function execBuy({ bot, uid, mode, mint, symbol, amountUsd, slippagePct, phantomClient }) {
+  // Pre-sim Jupiter si existe
+  const q = await preSimJupiter({
+    mintIn: process.env.USDC_MINT || 'USDC',
+    mintOut: mint,
+    amountUsd,
+    slippagePct
+  });
+  if (q && n(q.priceImpactPct, 0) > ENV.MAX_IMPACT_PCT) {
+    await trading.logEvent({ mode, type:'blocked', token:symbol, mint, fuente:'preSim', extra:{ impact:q.priceImpactPct } });
+    return { ok:false, why:'impacto jupiter alto' };
+  }
 
-async function manageExits({ bot, uid, mode, store, p, cur, phantomClient, ladder }){
-  // 1) Stop Loss SOLO si IA marca scam
-  const risk = (bot._riskFlags?.[uid]?.[p.mint]) || null;
-  if (risk?.isScam) {
-    const pnlPct = p.avg > 0 ? ((cur - p.avg) / p.avg) * 100 : 0;
-    const SL_HARD = Number(process.env.SL_IA_SCAM_PCT || -12); // por ej. -12%
-    if (pnlPct <= SL_HARD) {
-      const sold = await execSell({ mode, phantomClient, mint: p.mint, amountToken: p.qty, slippagePct: 1.2 });
+  if (mode === 'REAL') {
+    if (!phantomClient?.buyToken) return { ok:false, why:'phantomClient.buyToken faltante' };
+    if (ENV.DOWNSCALE_REAL && phantomClient.getUsdcBalance) {
+      const usdc = await phantomClient.getUsdcBalance().catch(()=>null);
+      if (usdc != null && usdc < amountUsd) {
+        if (usdc < 5) return { ok:false, why:'USDC insuficiente' };
+        amountUsd = usdc; // auto-downscale
+      }
+    }
+    const tx = await phantomClient.buyToken({ mint, amountUsd, slippagePct }).catch(e=>({ ok:false, err:String(e?.message||e) }));
+    if (!tx?.ok) return { ok:false, why:tx?.err||'compra REAL falló' };
+    await trading.logTrade({
+      mode, type:'buy', token:symbol, mint,
+      inversion_usd: amountUsd, entrada_usd: tx.priceUsd || null,
+      fuente:'AutoSniper', extra:{ txid: tx.txid, slip: slippagePct, presim:q?.priceImpactPct }
+    });
+    // Shadow logging DEMO
+    await trading.logTrade({ mode:'DEMO', type:'shadow', token:symbol, mint, inversion_usd: amountUsd, entrada_usd: tx.priceUsd||null, fuente:'AutoSniper' });
+    return { ok:true, price: tx.priceUsd || null, txid: tx.txid };
+  } else {
+    // DEMO
+    const px = await markets.getPrice?.(mint).catch(()=>null);
+    const price = n(px, 0.000001);
+    const qty = amountUsd / Math.max(0.0000001, price);
+    addBuyPosition(getStore(bot, uid, 'DEMO'), mint, symbol, qty, price);
+    await trading.logTrade({ mode, type:'buy', token:symbol, mint, inversion_usd: amountUsd, entrada_usd: price, fuente:'AutoSniper' });
+    return { ok:true, price, txid:'DEMO' };
+  }
+}
+
+async function execSell({ bot, uid, mode, mint, symbol, amountToken, slippagePct, phantomClient }) {
+  if (mode === 'REAL') {
+    if (!phantomClient?.sellToken) return { ok:false, why:'phantomClient.sellToken faltante' };
+    const tx = await phantomClient.sellToken({ mint, amountToken, slippagePct }).catch(e=>({ ok:false, err:String(e?.message||e) }));
+    if (!tx?.ok) return { ok:false, why:tx?.err||'venta REAL falló' };
+    return { ok:true, price: tx.priceUsd || null, txid: tx.txid };
+  } else {
+    // DEMO: sacamos qty; el precio de logging se resuelve afuera con cur
+    dropQty(getStore(bot, uid, 'DEMO'), mint, amountToken);
+    return { ok:true, price:null, txid:'DEMO' };
+  }
+}
+
+// ———————————————————————————————————————————————————————————
+// Gestión de salidas: SL de PROBE + IA scam + Giveback ladder (TU REGLA)
+// ———————————————————————————————————————————————————————————
+function parseLadder() {
+  try { return JSON.parse(ENV.STOP_LADDER_JSON); }
+  catch { return []; }
+}
+async function manageExits({ bot, uid, mode, store, p, cur, phantomClient }) {
+  // 0) mantener "highest"
+  p.highest = Math.max(p.highest || 0, cur);
+
+  const pnlPct = p.avg>0 ? ((cur - p.avg) / p.avg) * 100 : 0;
+  const peakPct= p.avg>0 && p.highest>0 ? ((p.highest - p.avg) / p.avg) * 100 : 0;
+
+  // 1) SL sólo para PROBE (si compraste hace poco y está bajo agua) — opcional
+  if (p.lastBuyTs && (Date.now() - p.lastBuyTs) < 60_000) {
+    if (pnlPct <= -ENV.PROBE_SL_PCT) {
+      const sellQty = p.qty;
+      if (sellQty > 0) {
+        const sold = await execSell({ bot, uid, mode, mint:p.mint, symbol:p.symbol, amountToken:sellQty, slippagePct:0.8, phantomClient });
+        if (sold.ok) {
+          dropQty(store, p.mint, sellQty);
+          registerPnL(bot, uid, (cur - p.avg) * sellQty);
+          await trading.logTrade({ mode, type:'sell', token:p.symbol, mint:p.mint, salida_usd: cur, inversion_usd: p.avg*sellQty, pnl_usd:(cur - p.avg)*sellQty, fuente:'AutoSniper', extra:{ kind:'probe_sl' } });
+          return; // ya cerramos
+        }
+      }
+    }
+  }
+
+  // 2) SL hard por IA scam (si tu pipeline marca p.aiScam=true). Si no existe, nunca dispara.
+  if (p.aiScam === true && pnlPct < 0) {
+    const sellQty = p.qty;
+    if (sellQty > 0) {
+      const sold = await execSell({ bot, uid, mode, mint:p.mint, symbol:p.symbol, amountToken:sellQty, slippagePct:0.8, phantomClient });
       if (sold.ok) {
-        await trading.logTrade({
-          mode, type:'sell', token:p.symbol, mint:p.mint,
-          salida_usd: cur, inversion_usd: p.avg*p.qty,
-          pnl_usd: (cur - p.avg)*p.qty, pnl_pct: pnlPct,
-          fuente:'AutoSniper', extra:{ reason:'SL_IA_SCAM', txid: sold.txid }
-        });
-        dropQty(store, p.mint, p.qty);
+        dropQty(store, p.mint, sellQty);
+        registerPnL(bot, uid, (cur - p.avg) * sellQty);
+        await trading.logTrade({ mode, type:'sell', token:p.symbol, mint:p.mint, salida_usd: cur, inversion_usd: p.avg*sellQty, pnl_usd:(cur - p.avg)*sellQty, fuente:'AutoSniper', extra:{ kind:'ai_scam' } });
         return;
       }
     }
   }
 
-  // 2) GIVEBACK LADDER (venta 100% cuando cae a backTo tras alcanzar trigger)
-  {
-    const rules = (ladder && ladder.length) ? ladder : DEFAULT_STOP_LADDER;
-    if (!p._gbApplied) p._gbApplied = {};
-
-    const pnlPct = p.avg > 0 ? ((cur - p.avg) / p.avg) * 100 : 0;
-    const peakPct = p.highest > 0 ? ((p.highest - p.avg) / p.avg) * 100 : 0;
-
-    for (const r of rules) {
-      const key = `${r.triggerUpPct}_${r.backToPct}_${r.sellPct}`;
-      if (p._gbApplied[key]) continue;
-      if (peakPct >= r.triggerUpPct && pnlPct <= r.backToPct) {
-        const sellQty = p.qty * (r.sellPct / 100);
-        if (sellQty > 0) {
-          const sold = await execSell({ mode, phantomClient, mint: p.mint, amountToken: sellQty, slippagePct: 0.8 });
-          if (sold.ok) {
-            dropQty(store, p.mint, sellQty);
-            p._gbApplied[key] = true;
-            await trading.logTrade({
-              mode, type:'sell', token:p.symbol, mint:p.mint,
-              salida_usd: cur, inversion_usd: p.avg*sellQty,
-              pnl_usd: (cur - p.avg)*sellQty, pnl_pct: pnlPct,
-              fuente:'AutoSniper', extra:{ reason:`GIVEBACK ${r.triggerUpPct}->${r.backToPct} sell ${r.sellPct}%`, txid: sold.txid }
-            });
-          }
+  // 3) Giveback ladder — EXACTAMENTE tu escalera por default (100→50, 250→125, etc.)
+  const ladder = parseLadder();
+  p._gbApplied = p._gbApplied || {};
+  for (const r of ladder) {
+    const key = `${r.triggerUpPct}_${r.backToPct}_${r.sellPct}`;
+    if (p._gbApplied[key]) continue;
+    if (peakPct >= r.triggerUpPct && pnlPct <= r.backToPct) {
+      const sellQty = p.qty * (r.sellPct / 100);
+      if (sellQty > 0) {
+        const sold = await execSell({ bot, uid, mode, mint:p.mint, symbol:p.symbol, amountToken:sellQty, slippagePct:0.8, phantomClient });
+        if (sold.ok) {
+          dropQty(store, p.mint, sellQty);
+          registerPnL(bot, uid, (cur - p.avg) * sellQty);
+          p._gbApplied[key] = true;
+          await trading.logTrade({ mode, type:'sell', token:p.symbol, mint:p.mint, salida_usd: cur, inversion_usd: p.avg*sellQty, pnl_usd:(cur - p.avg)*sellQty, fuente:'AutoSniper', extra:{ kind:'ladder', rule:r } });
         }
       }
     }
   }
+}
 
-  // 3) (Opcional) TP parciales/trailing — desactivados por defecto para no cruzarse con la escalera.
-  // Si querés reactivarlos, agregalos aquí después del GIVEBACK.
+// ———————————————————————————————————————————————————————————
+// LOOP de escaneo y ejecución por usuario
+// ———————————————————————————————————————————————————————————
+async function loopForUser(bot, uid, { phantomClient }) {
+  // GUARDAS: si se apagó o fue abortado, no corremos nada
+  if (!bot._sniperOn?.[uid]) return;
+  const _sess = (_getSess(bot, uid)) || null;
+  if (_sess?.abort?.signal?.aborted) return;
+
+  const profile = (await profileStore.getProfile?.(uid))?.sniperProfile || ENV.PROFILE; // 'maxseg'|'normal'
+  const rules = tunedRules(profile);
+
+  // 1) tomar modo actual
+  const mode = bot.realMode?.[uid] ? 'REAL' : 'DEMO';
+  const baseUsd = mode === 'REAL' ? ENV.BASE_REAL : ENV.BASE_DEMO;
+
+  // 2) budgets / cooldown
+  const risk = getRisk(bot, uid);
+  const bud = withinHourBudget(risk, mode, baseUsd);
+  if (!bud.ok) {
+    await trading.logEvent({ mode, type:'cooldown_or_budget', fuente:'AutoSniper', extra:{ why:bud.why } });
+    return;
+  }
+
+  // 3) obtener candidatos
+  const cands = await (markets.scanNewTokens?.().catch(()=>[])) || [];
+  // Si no hay feed, nada que hacer
+  if (!Array.isArray(cands) || cands.length === 0) return;
+
+  for (const cand of cands) {
+    try {
+      const mint   = cand.mint || cand.mintAddress || cand.address || null;
+      const symbol = cand.symbol || (mint ? mint.slice(0,6)+'…' : 'TOKEN');
+      if (!mint) continue;
+
+      // 3.1 multi-validate + on-chain
+      const mv = await multiValidate(mint, rules);
+      if (!mv.ok) {
+        await trading.logEvent({ mode, type:'blocked', token:symbol, mint, fuente:'multiValidate', extra:{ why: mv.why } });
+        continue;
+      }
+
+      // 3.2 momentum & age
+      const intel = {
+        hhhl: !!cand.intel?.hhhl,
+        retracePct: n(cand.intel?.retracePct, null),
+        buyRatioPct: n(cand.intel?.buyRatioPct, null)
+      };
+      const ageSec = n(cand.metrics?.age_sec, null);
+
+      // 3.3 decidir entrada (probe/full)
+      const d = decideEntry({ profile, intel, ageSec });
+      if (d.action === 'block') {
+        await trading.logEvent({ mode, type:'blocked', token:symbol, mint, fuente:'entry', extra:{ why:d.reason } });
+        continue;
+      }
+
+      // 3.4 ejecutar compra inicial
+      const amountUsd = baseUsd * d.sizePct;
+      const b = await execBuy({ bot, uid, mode, mint, symbol, amountUsd, slippagePct: d.slippagePct, phantomClient });
+      if (!b.ok) {
+        await trading.logEvent({ mode, type:'buy_fail', token:symbol, mint, fuente:'execBuy', extra:{ why: b.why } });
+        continue;
+      }
+
+      // 3.5 si probe, evaluar scale-up en ~22s (cancelable por OFF)
+      if (d.action === 'probe') {
+        await csleep(bot, uid, 22_000); // cancelable
+        // re-validar que siga ON (pudo apagarse durante la espera)
+        if (!bot._sniperOn?.[uid]) continue;
+
+        // revalidar momentum (reusar intel si no hay pipeline reactivo)
+        const intel2 = {
+          hhhl: !!cand.intel?.hhhl,
+          retracePct: n(cand.intel?.retracePct, null),
+          buyRatioPct: n(cand.intel?.buyRatioPct, null)
+        };
+        const m2 = momentumGate(intel2, rules);
+        if (m2.ok) {
+          const remain = baseUsd * (1.0 - d.sizePct);
+          if (remain >= 5) {
+            const b2 = await execBuy({ bot, uid, mode, mint, symbol, amountUsd: remain, slippagePct: Math.max(0.8, d.slippagePct), phantomClient });
+            if (!b2.ok) {
+              await trading.logEvent({ mode, type:'buy_fail', token:symbol, mint, fuente:'scaleUp', extra:{ why:b2.why } });
+            }
+          }
+        }
+      }
+
+      // 3.6 registrar spend del primer tramo
+      registerSpend(risk, mode, baseUsd);
+
+    } catch (e) {
+      await trading.logEvent({ mode: bot.realMode?.[uid] ? 'REAL':'DEMO', type:'error', fuente:'loopForUser', extra:{ err:String(e?.message||e) } });
+    }
+  }
+
+  // 4) Gestión de salidas para TODAS las posiciones del usuario
+  for (const MODE of ['DEMO','REAL']) {
+    const store = getStore(bot, uid, MODE);
+    for (const mint of Object.keys(store)) {
+      const p = store[mint];
+      const curPx = await markets.getPrice?.(mint).catch(()=>null);
+      const cur = n(curPx, null);
+      if (!Number.isFinite(cur)) continue;
+      await manageExits({ bot, uid, mode: MODE, store, p, cur, phantomClient: MODE==='REAL' ? bot._phantomClient : null });
+    }
+  }
+}
+
+// ———————————————————————————————————————————————————————————
+// Registro del comando /autosniper (on|off|stop|status)
+// ———————————————————————————————————————————————————————————
+export default function registerAutoSniper(bot, { phantomClient } = {}) {
+  bot._sniperLoops = bot._sniperLoops || {};
+  bot._phantomClient = phantomClient || bot._phantomClient || {};
+
+  // Estado global por usuario
+  bot._sniperOn = bot._sniperOn || {};
+
+  // Limpia posibles listeners viejos (con y sin @mención)
+  bot.removeTextListener?.(/^\s*\/autosniper(?:\s+(?:on|off|stop|status))?\s*$/i);
+  bot.removeTextListener?.(/^\s*\/autosniper(?:@[\w_]+)?(?:\s+(?:on|off|stop|status))?\s*$/i);
+  bot.removeTextListener?.(/^\/autosniper/i);
+
+  bot.onText(/^\s*\/autosniper(?:@[\w_]+)?(?:\s+(on|off|stop|status))?\s*$/i, async (msg, m) => {
+    const chatId = msg.chat.id;
+    const uid    = String(msg.from.id);
+    const arg    = ((m && m[1]) ? String(m[1]) : '').toLowerCase().trim();
+    console.log(`[AUTOSNIPER] cmd arg="${arg||'(vacío)'}" uid=${uid}`);
+
+    // OFF/STOP primero (determinístico)
+    if (arg === 'off' || arg === 'stop') {
+      if (bot._sniperLoops?.[uid]) {
+        clearInterval(bot._sniperLoops[uid]);
+        delete bot._sniperLoops[uid];
+      }
+      bot._sniperOn[uid] = false;
+      _clearTracked(bot, uid); // mata sleeps/async/intervals
+      return bot.sendMessage(chatId, '🛑 Sniper *OFF*', { parse_mode:'Markdown' });
+    }
+
+    // STATUS
+    if (arg === 'status') {
+      const on   = !!bot._sniperOn[uid];
+      const mode = bot.realMode?.[uid] ? 'REAL' : 'DEMO';
+      const prof = (await profileStore.getProfile?.(uid))?.sniperProfile || ENV.PROFILE;
+      const pri  = isPriorityNowUTC3() ? 'Sí' : 'No';
+      const text = [
+        `📟 *Sniper*: ${on?'ON':'OFF'}`,
+        `• Modo: *${mode}*`,
+        `• Perfil: *${prof}*`,
+        `• Prioridad horaria ahora: *${pri}* (9–12 / 13–16 / 17–20 UTC−3)`,
+        `• Base DEMO/REAL: $${ENV.BASE_DEMO} / $${ENV.BASE_REAL}`,
+        `• Ladder: ${ENV.STOP_LADDER_JSON}`,
+      ].join('\n');
+      return bot.sendMessage(chatId, text, { parse_mode:'Markdown', disable_web_page_preview:true });
+    }
+
+    // ON (o vacío) — encender
+    if (arg === 'on' || arg === '') {
+      if (bot._sniperOn[uid]) {
+        return bot.sendMessage(chatId, '🤖 Sniper ya estaba *ON*', { parse_mode:'Markdown' });
+      }
+      bot._sniperOn[uid] = true;
+
+      // sesión limpia (AbortController + tracking)
+      _clearTracked(bot, uid);
+      _ensureAbort(bot, uid);
+
+      bot.sendMessage(chatId, '🤖 Sniper *ON* (escaneo continuo con prioridad por franjas).', { parse_mode:'Markdown' });
+
+      // Iniciar loop periódico (trackeado) + corrida inmediata
+      if (bot._sniperLoops?.[uid]) clearInterval(bot._sniperLoops[uid]);
+      bot._sniperLoops[uid] = _trackInterval(
+        bot, uid,
+        setInterval(() => loopForUser(bot, uid, { phantomClient: bot._phantomClient }), ENV.SCAN_MS)
+      );
+      // Corrida inmediata
+      loopForUser(bot, uid, { phantomClient: bot._phantomClient }).catch(()=>{});
+      return;
+    }
+
+    // Help
+    bot.sendMessage(chatId, 'Uso: /autosniper on | off | status', { parse_mode:'Markdown' });
+  });
+
+  // Compatibilidad: /stop para apagar rápido
+  bot.removeTextListener?.(/^\/stop$/i);
+  bot.onText(/^\/stop$/i, async (msg) => {
+    const uid = String(msg.from.id);
+    if (bot._sniperLoops[uid]) {
+      clearInterval(bot._sniperLoops[uid]);
+      delete bot._sniperLoops[uid];
+    }
+    bot._sniperOn[uid] = false;
+    _clearTracked(bot, uid);
+    bot.sendMessage(msg.chat.id, '🛑 Sniper *OFF*', { parse_mode:'Markdown' });
+  });
 }
