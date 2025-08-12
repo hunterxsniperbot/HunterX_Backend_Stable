@@ -11,6 +11,7 @@ import TelegramBot from 'node-telegram-bot-api';
 
 // Handlers (comandos)
 import registerAjustes    from './src/commands/ajustes.js';
+import registerSniperReset from './src/commands/sniperReset.js';
 import registerAutoSniper from './src/commands/autoSniper.js';
 import registerMensaje    from './src/commands/mensaje.js';
 import registerRegistro   from './src/commands/registro.js';
@@ -79,6 +80,18 @@ async function setSlashMenu() {
     { command: 'mensaje',   description: 'Ayuda / panel' },
   ];
   try {
+const commands = [
+  { command: 'health',     description: 'Conexiones activas' },
+  { command: 'autosniper', description: 'Activar sniper automático' },
+  { command: 'real',       description: 'Modo trading REAL' },
+  { command: 'demo',       description: 'Modo DEMO (simulación)' },
+  { command: 'stop',       description: 'Detener sniper' },
+  { command: 'wallet',     description: 'Ver posiciones abiertas' },
+  { command: 'registro',   description: 'Ver posiciones cerradas' },
+  { command: 'discord',    description: 'Tendencias en Discord' },
+  { command: 'ajustes',    description: 'Configurar sniper' },
+  { command: 'mensaje',    description: 'Ayuda / panel' }
+];
     await bot.setMyCommands(commands);
     console.log('🟦 [Slash] comandos seteados');
   } catch (e) {
@@ -117,6 +130,7 @@ if (!global.__HX_HANDLERS_REGISTERED__) {
 
   try {
     registerAutoSniper(bot, { quickNodeClient, phantomClient, trading });
+  registerSniperReset(bot);
     console.log('✅ Handler cargado: autoSniper.js');
   } catch (e) {
     console.error('❌ autoSniper:', e?.message || e);

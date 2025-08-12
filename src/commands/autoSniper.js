@@ -1,5 +1,3 @@
-// src/commands/autoSniper.js — MODO TURBO PRO (Hunter X)
-// - Scanner 24/7 con franjas prioritarias (AR UTC-3)
 // - Doble/Triple validación (DexScreener + Birdeye + Solscan*)
 // - Cheques on-chain duros* (mint/freeze/upgrade/LP)  (*si tus servicios lo soportan)
 // - Pre-sim Jupiter (quote) para estimar impacto real antes de comprar
@@ -18,6 +16,7 @@ import * as trading       from '../services/trading.js';      // logTrade/logEve
 import * as demoBank      from '../services/demoBank.js';     // simulador (si aplica)
 import * as profileStore  from '../services/profile.js';      // perfiles (si aplica)
 import * as supabase      from '../services/supabase.js';     // si querés hooks externos
+import * as state        from '../services/state.js';     // persistencia simple ON/OFF
 
 // ———————————————————————————————————————————————————————————
 // Defaults desde .env (todo opcional, con fallback sensato)
@@ -98,6 +97,20 @@ function readBool(v, def=false) {
 function n(v, d=null){ v = Number(v); return Number.isFinite(v)?v:d; }
 function pct(a,b){ return (b>0) ? (a/b)*100 : null; }
 const sleep = (ms)=> new Promise(r=>setTimeout(r,ms));
+// Escapar HTML para parse_mode:"HTML"
+function escHtml(s){
+  return String(s)
+    .replace(/&/g,'&amp;')
+    .replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;');
+}
+// Escapa MarkdownV2 (evita 400 "can't parse entities")
+// Escapa MarkdownV2 correctamente (un solo backslash antes de cada char reservado)
+function mdv2(s){
+  return String(s)
+    .replace(/\\/g, '\\\\')                            // 1) duplicar backslashes existentes
+    .replace(/([_*\\[\\]\\(\\)~`>#+\\-=|{}.!])/g, '\\$1'); // 2) escapar el resto con un solo "\"
+}
 
 // ———————————————————————————————————————————————————————————
 // Franjas prioritarias (UTC-3): 9–12 / 13–16 / 17–20
@@ -621,6 +634,36 @@ export default function registerAutoSniper(bot, { phantomClient } = {}) {
 
   // Estado global por usuario
   bot._sniperOn = bot._sniperOn || {};
+// Cargar ON/OFF persistido (no bloqueante)
+  state.getSniperOnMap?.()
+    .then((map)=>{ if (map && typeof map==='object') bot._sniperOn = { ...map, ...bot._sniperOn }; })
+    .catch(()=>{});
+  setTimeout(() => {
+    try {
+      const map = bot._sniperOn || {};
+      for (const [uid, on] of Object.entries(map)) {
+        if (!on) continue;
+        if (bot._sniperLoops?.[uid]) continue; // ya estaba corriendo
+
+        // Iniciar loop periódico (trackeado) con anti-reentrancia
+        bot._sniperLoops = bot._sniperLoops || {};
+        bot._running     = bot._running || {};
+        bot._sniperLoops[uid] = _trackInterval(
+          bot, uid,
+          setInterval(() => {
+            if (bot._running && bot._running[uid]) return; // anti-reentrancia
+            bot._running[uid] = true;
+            Promise.resolve(
+              loopForUser(bot, uid, { phantomClient: bot._phantomClient })
+            ).finally(() => { bot._running[uid] = false; });
+          }, ENV.SCAN_MS)
+        );
+
+        // Corrida inmediata
+        loopForUser(bot, uid, { phantomClient: bot._phantomClient }).catch(()=>{});
+      }
+    } catch {}
+  }, 1500);
 
   // Limpia posibles listeners viejos (con y sin @mención)
   bot.removeTextListener?.(/^\s*\/autosniper(?:\s+(?:on|off|stop|status))?\s*$/i);
@@ -640,45 +683,57 @@ export default function registerAutoSniper(bot, { phantomClient } = {}) {
         delete bot._sniperLoops[uid];
       }
       bot._sniperOn[uid] = false;
+      if (bot._running && bot._running[uid]) delete bot._running[uid];
+      state.setSniperOn?.(uid, false).catch(()=>{});
       _clearTracked(bot, uid); // mata sleeps/async/intervals
-      return bot.sendMessage(chatId, '🛑 Sniper *OFF*', { parse_mode:'Markdown' });
+      return bot.sendMessage(chatId, '<b>🛑 Sniper OFF</b>', { parse_mode:'HTML' });
     }
 
-    // STATUS
+    // STATUS — salida en HTML (sin MarkdownV2)
+    // STATUS — salida en HTML (sin MarkdownV2)
     if (arg === 'status') {
       const on   = !!bot._sniperOn[uid];
       const mode = bot.realMode?.[uid] ? 'REAL' : 'DEMO';
       const prof = (await profileStore.getProfile?.(uid))?.sniperProfile || ENV.PROFILE;
       const pri  = isPriorityNowUTC3() ? 'Sí' : 'No';
-      const text = [
-        `📟 *Sniper*: ${on?'ON':'OFF'}`,
-        `• Modo: *${mode}*`,
-        `• Perfil: *${prof}*`,
-        `• Prioridad horaria ahora: *${pri}* (9–12 / 13–16 / 17–20 UTC−3)`,
-        `• Base DEMO/REAL: $${ENV.BASE_DEMO} / $${ENV.BASE_REAL}`,
-        `• Ladder: ${ENV.STOP_LADDER_JSON}`,
-      ].join('\n');
-      return bot.sendMessage(chatId, text, { parse_mode:'Markdown', disable_web_page_preview:true });
-    }
 
-    // ON (o vacío) — encender
+      const lines = [
+        '<b>📟 Sniper:</b> ' + (on ? '<b>ON</b>' : '<b>OFF</b>'),
+        '• Modo: <b>' + escHtml(mode) + '</b>',
+        '• Perfil: <b>' + escHtml(prof) + '</b>',
+        '• Prioridad horaria ahora: <b>' + escHtml(pri) + '</b> (9–12 / 13–16 / 17–20 UTC−3)',
+        '• Base DEMO/REAL: $' + ENV.BASE_DEMO + ' / $' + ENV.BASE_REAL,
+        '• Ladder: <code>' + escHtml(ENV.STOP_LADDER_JSON) + '</code>'
+      ];
+
+      const text = lines.join('\n');
+      return bot.sendMessage(chatId, text, { parse_mode:'HTML', disable_web_page_preview:true });
+    }
     if (arg === 'on' || arg === '') {
       if (bot._sniperOn[uid]) {
-        return bot.sendMessage(chatId, '🤖 Sniper ya estaba *ON*', { parse_mode:'Markdown' });
+        return bot.sendMessage(chatId, '<b>🤖 Sniper ya estaba ON</b>', { parse_mode:'HTML' });
       }
       bot._sniperOn[uid] = true;
+      state.setSniperOn?.(uid, true).catch(()=>{});
 
       // sesión limpia (AbortController + tracking)
       _clearTracked(bot, uid);
       _ensureAbort(bot, uid);
 
-      bot.sendMessage(chatId, '🤖 Sniper *ON* (escaneo continuo con prioridad por franjas).', { parse_mode:'Markdown' });
+      return bot.sendMessage(chatId, '<b>🤖 Sniper ON</b> (escaneo continuo con prioridad por franjas).', { parse_mode:'HTML' });
 
       // Iniciar loop periódico (trackeado) + corrida inmediata
       if (bot._sniperLoops?.[uid]) clearInterval(bot._sniperLoops[uid]);
       bot._sniperLoops[uid] = _trackInterval(
         bot, uid,
-        setInterval(() => loopForUser(bot, uid, { phantomClient: bot._phantomClient }), ENV.SCAN_MS)
+        setInterval(() => {
+          if (bot._running && bot._running[uid]) return; // anti-reentrancia
+          bot._running = bot._running || {};
+          bot._running[uid] = true;
+          Promise.resolve(
+            loopForUser(bot, uid, { phantomClient: bot._phantomClient })
+          ).finally(() => { bot._running[uid] = false; });
+        }, ENV.SCAN_MS)
       );
       // Corrida inmediata
       loopForUser(bot, uid, { phantomClient: bot._phantomClient }).catch(()=>{});
@@ -686,7 +741,7 @@ export default function registerAutoSniper(bot, { phantomClient } = {}) {
     }
 
     // Help
-    bot.sendMessage(chatId, 'Uso: /autosniper on | off | status', { parse_mode:'Markdown' });
+    bot.sendMessage(chatId, 'Uso: <code>/autosniper on</code> | <code>off</code> | <code>status</code>', { parse_mode:'HTML' });
   });
 
   // Compatibilidad: /stop para apagar rápido
@@ -698,7 +753,9 @@ export default function registerAutoSniper(bot, { phantomClient } = {}) {
       delete bot._sniperLoops[uid];
     }
     bot._sniperOn[uid] = false;
+      if (bot._running && bot._running[uid]) delete bot._running[uid];
+      state.setSniperOn?.(uid, false).catch(()=>{});
     _clearTracked(bot, uid);
-    bot.sendMessage(msg.chat.id, '🛑 Sniper *OFF*', { parse_mode:'Markdown' });
+    bot.sendMessage(msg.chat.id, '<b>🛑 Sniper OFF</b>', { parse_mode:'HTML' });
   });
 }

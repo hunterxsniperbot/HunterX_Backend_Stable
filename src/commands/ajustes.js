@@ -1,3 +1,9 @@
+function escHtml(s){
+  return String(s)
+    .replace(/&/g,'&amp;')
+    .replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;');
+}
 // src/commands/ajustes.js — Seteo de perfil, montos base y STOP-LADDER (GIVEBACK)
 const PRESET_LADDER = [
   { triggerUpPct: 100,  backToPct:  30,  sellPct: 100 },
@@ -39,7 +45,7 @@ export default function registerAjustes(bot) {
         `• /ajustes ladder clear        (borra todas las reglas)\n` +
         `• /ajustes ladder add  <triggerUp%> <backTo%> <sell%>\n` +
         `• /ajustes ladder show`;
-      return bot.sendMessage(chatId, text, { parse_mode:'Markdown' });
+      return bot.sendMessage(chatId, escHtml(text), { parse_mode:'HTML' });
     }
 
     const parts = args.split(/\s+/);
@@ -48,32 +54,32 @@ export default function registerAjustes(bot) {
     if (parts[0].toLowerCase() === 'perfil' && parts[1]) {
       const v = parts[1].toLowerCase();
       if (!['strict','turbo'].includes(v)) {
-        return bot.sendMessage(chatId, 'Perfil inválido (strict|turbo).');
+        return bot.sendMessage(chatId, 'Perfil inválido (strict|turbo).', { parse_mode:'HTML' });
       }
       S.profile = v;
-      return bot.sendMessage(chatId, `Perfil seteado a *${v.toUpperCase()}*`, { parse_mode:'Markdown' });
+      return bot.sendMessage(chatId, '<b>Perfil seteado a ' + escHtml(v.toUpperCase()) + '</b>', { parse_mode:'HTML' });
     }
 
     // base demo/real
     if (parts[0].toLowerCase() === 'base' && parts[1] && parts[2]) {
       const side = parts[1].toLowerCase();
       const val  = Number(parts[2]);
-      if (!Number.isFinite(val) || val <= 0) return bot.sendMessage(chatId, 'Monto inválido.');
+      if (!Number.isFinite(val) || val <= 0) return bot.sendMessage(chatId, 'Monto inválido.', { parse_mode:'HTML' });
       if (side === 'demo') S.baseDemo = Math.floor(val);
       else if (side === 'real') S.baseReal = Math.floor(val);
-      else return bot.sendMessage(chatId, 'Usá: /ajustes base demo|real N');
-      return bot.sendMessage(chatId, `Base *${side.toUpperCase()}* = $${Math.floor(val)}`, { parse_mode:'Markdown' });
+      else return bot.sendMessage(chatId, 'Usá: <code>/ajustes base demo|real N</code>', { parse_mode:'HTML' });
+      return bot.sendMessage(chatId, '<b>Base ' + escHtml(side.toUpperCase()) + '</b> = $' + Math.floor(val), { parse_mode:'HTML' });
     }
 
     // ladder
     if (parts[0].toLowerCase() === 'ladder') {
       if (parts[1]?.toLowerCase() === 'preset') {
         bot._stopLadder[uid] = [...PRESET_LADDER];
-        return bot.sendMessage(chatId, 'Stop-Ladder: *preset cargado*', { parse_mode:'Markdown' });
+        return bot.sendMessage(chatId, 'Stop-Ladder: <b>preset cargado</b>', { parse_mode:'HTML' });
       }
       if (parts[1]?.toLowerCase() === 'clear') {
         bot._stopLadder[uid] = [];
-        return bot.sendMessage(chatId, 'Stop-Ladder: *limpio*', { parse_mode:'Markdown' });
+        return bot.sendMessage(chatId, 'Stop-Ladder: <b>limpio</b>', { parse_mode:'HTML' });
       }
       if (parts[1]?.toLowerCase() === 'add' && parts[2] && parts[3] && parts[4]) {
         const T = Number(parts[2]); // triggerUp
@@ -83,18 +89,18 @@ export default function registerAjustes(bot) {
           return bot.sendMessage(chatId, 'Usá: /ajustes ladder add <triggerUp%> <backTo%> <sell%>');
         }
         bot._stopLadder[uid].push({ triggerUpPct:T, backToPct:B, sellPct:SLL });
-        return bot.sendMessage(chatId, `Ladder +: peak ≥ +${T}% y actual ≤ +${B}% → vender ${SLL}%`, { parse_mode:'Markdown' });
+        return bot.sendMessage(chatId, 'Ladder +: peak ≥ +' + T + '% y actual ≤ +' + B + '% → vender ' + SLL + '%', { parse_mode:'HTML' });
       }
       if (parts[1]?.toLowerCase() === 'show') {
         const L2 = bot._stopLadder[uid] || [];
         const txt = L2.length
           ? L2.map(r => `• Peak ≥ *+${r.triggerUpPct}%* y actual ≤ *+${r.backToPct}%* → vender *${r.sellPct}%*`).join('\n')
           : '— vacío —';
-        return bot.sendMessage(chatId, `Stop-Ladder actual:\n${txt}`, { parse_mode:'Markdown' });
+        return bot.sendMessage(chatId, '<b>Stop-Ladder actual:</b>\n<pre>' + escHtml(txt) + '</pre>', { parse_mode:'HTML' });
       }
-      return bot.sendMessage(chatId, 'Usá: /ajustes ladder preset|clear|add|show');
+      return bot.sendMessage(chatId, 'Usá: <code>/ajustes ladder preset|clear|add|show</code>', { parse_mode:'HTML' });
     }
 
-    return bot.sendMessage(chatId, 'Comando de /ajustes no reconocido.');
+    return bot.sendMessage(chatId, 'Comando de /ajustes no reconocido.', { parse_mode:'HTML' });
   });
 }

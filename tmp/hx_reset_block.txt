@@ -1,0 +1,19 @@
+    // RESET — limpia timers/sesión/stores del usuario y apaga
+    if (arg === 'reset') {
+      if (bot._sniperLoops?.[uid]) {
+        clearInterval(bot._sniperLoops[uid]);
+        delete bot._sniperLoops[uid];
+      }
+      bot._sniperOn[uid] = false;
+      _clearTracked?.(bot, uid); // mata sleeps/intervals/abort
+
+      // limpiar stores y risk del usuario
+      if (bot._store_demo && bot._store_demo[uid]) delete bot._store_demo[uid];
+      if (bot._store_real && bot._store_real[uid]) delete bot._store_real[uid];
+      if (bot._risk && bot._risk[uid]) delete bot._risk[uid];
+
+      // persistencia
+      state.setSniperOn?.(uid, false).catch(()=>{});
+
+      return bot.sendMessage(chatId, '♻️ Sniper reset completo para este usuario', { parse_mode:'Markdown' });
+    }
