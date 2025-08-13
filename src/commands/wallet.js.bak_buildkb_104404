@@ -1,6 +1,19 @@
-
-function bpsOf(pct){ return Math.round(Number(pct)*100); }
+// src/commands/wallet.js — posiciones abiertas (vivo) + vender
 import { buildMetrics } from '../services/positions.js';
+// Aseguramos también quoteToUSDC para cotizar si hace falta
+import { sellToUSDC, quoteToUSDC } from '../services/swap.js';
+
+  // --- callbacks para botones de venta (wallet:sell:xx:MODE:<symbol>[:<mint>[:<qty>]])
+import * as trading from '../services/trading.js'; // asume logTrade/logEvent
+
+const sleep = (ms)=> new Promise(r=>setTimeout(r,ms));
+function jitter(ms){ return Math.max(1000, Math.floor(ms * (0.9 + Math.random()*0.2))); }
+function nextDelay({prevMs, changed, errorCount, baseMs}){
+  if (errorCount>0) return Math.min((prevMs||baseMs)*1.5, 30000);
+  return changed ? baseMs : Math.min((prevMs||baseMs)+2000, 12000);
+}
+function fmtUSD(n){ return '$' + (Number(n||0)).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}); }
+function bpsOf(pct){ return Math.round(Number(pct)*100); }
 
 function renderPosition(p){
   const arrow = p.pnlPct>=0 ? '📈' : '📉';
@@ -34,7 +47,7 @@ function buildKeyboard(mode, which, idx){
 async function snapshot(bot, uid, max=10){
   const storeDemo = bot._store_demo?.[uid] || [];
   const storeReal = bot._store_real?.[uid] || [];
-  const m = await buildMetrics({ uid, max });
+  const m = await buildMetrics({ storeDemo, storeReal, max });
 
   const topD = m.demo.list;
   const topR = m.real.list;
@@ -87,6 +100,7 @@ async function handleSell(bot, uid, which, idx, pct, chatId, msgId){
   if (!pos || pos.qty<=0) throw new Error('Posición no encontrada');
 
   // Necesitamos precio actual para info
+  const { buildMetrics } = await import('../services/positions.js');
   const m = await buildMetrics({
     storeDemo: which==='d' ? store : [],
     storeReal: which==='r' ? store : [],

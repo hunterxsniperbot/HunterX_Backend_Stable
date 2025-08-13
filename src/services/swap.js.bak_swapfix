@@ -1,0 +1,104 @@
+// src/services/swap.js — stub seguro (cotiza con prices.js; DEMO vende en memoria; REAL pendiente)
+import { getPriceUSD } from './prices.js';
+
+const FEE_EST = 0.002; // 0.20% estimado total (ruta + tx) — solo para estimar
+
+/**
+ * Cotiza una venta de "qty" unidades (o porcentaje) de un token -> USD (USDC).
+ * symbol: "SOL", "BONK", etc.; mint también aceptado si no hay symbol.
+ * percent: 25|50|75|100 (default 100)
+ * slippageBps: 100 = 1.00% (solo informativo aquí)
+ */
+export async function quoteSell({ symbol, mint, qty, percent = 100, slippageBps = 100 }) {
+  const sym = (symbol || '').replace(/^\$/,'').toUpperCase();
+  const px  = await getPriceUSD(sym || mint);               // usa CoinGecko/CMC fallback ya configurados
+  const sellQty   = (Number(qty) || 0) * (Number(percent) / 100);
+  const grossUsd  = sellQty * px;
+  const estFees   = grossUsd * FEE_EST;
+  const estOutUsd = Math.max(0, grossUsd - estFees);
+  return { ok: true, via: 'prices', symbol: sym || mint, px, sellQty, estOutUsd, slippageBps };
+}
+
+/**
+ * DEMO: intenta reducir la posición en memoria (bot._store_demo[uid])
+ * Estructura esperada (flexible): { symbol|sym, qty, investedUsd, entryPriceUsd, ... }
+ */
+export async function sellPercentDemo({ bot, uid, symbol, percent = 100 }) {
+  try {
+    bot._store_demo = bot._store_demo || {};
+    const arr = bot._store_demo[uid] = bot._store_demo[uid] || [];
+    const sym = (symbol || '').toUpperCase();
+    const idx = arr.findIndex(p => (p.symbol || p.sym || '').toUpperCase() === sym);
+    if (idx < 0) return { ok: false, error: 'posición no encontrada' };
+
+    const p = arr[idx];
+    const cut      = Math.min(Math.max(Number(percent) / 100, 0), 1);
+    const qtySell  = (Number(p.qty) || 0) * cut;
+    const qtyLeft  = (Number(p.qty) || 0) - qtySell;
+
+    // Proporcionalizamos el "invertido" al restante, si existe
+    const inv = Number(p.investedUsd) || 0;
+    const invLeft = (p.qty > 0) ? inv * (qtyLeft / p.qty) : 0;
+
+    p.qty = qtyLeft;
+    if (Number.isFinite(invLeft)) p.investedUsd = invLeft;
+
+    if (p.qty <= 1e-12) {
+      arr.splice(idx, 1); // quitamos la posición si quedó en 0
+    } else {
+      arr[idx] = p;
+    }
+
+    return { ok: true, mode: 'DEMO', txid: null, remainingQty: p.qty || 0 };
+  } catch (e) {
+    return { ok: false, error: e?.message || e };
+  }
+}
+
+/**
+ * REAL: placeholder seguro — aún no configurado.
+ * Aquí irá ruta con Jupiter + firma Phantom (cuando activemos REAL).
+ */
+export async function sellPercentReal() {
+  return { ok: false, error: 'Jupiter/Phantom no configurados (stub).', needsSetup: true };
+}
+
+// Alias/compat: por si wallet.js usa otros nombres
+// Compat: wallet.js espera sellToUSDC y (a veces) quoteToUSDC.
+// Normalizamos parámetros y resolvemos el modo (REAL/DEMO) automáticamente.
+export async function sellToUSDC(...args){
+  // Soporta ambas firmas:
+  // - objeto: { bot, uid, symbol, percent=100, isReal, mode }
+  // - posicional: (bot, uid, symbol, percent=100, isReal=false)
+  let p = {};
+  if (args.length === 1 && typeof args[0] === 'object') {
+    p = { ...args[0] };
+  } else {
+    const [bot, uid, symbol, percent = 100, isReal = false] = args;
+    p = { bot, uid, symbol, percent, isReal };
+  }
+
+  // Resolver si es REAL:
+  // 1) flags explícitos (isReal/real/mode)
+  // 2) si vino bot+uid, miramos bot.realMode[uid]
+  let real =
+    !!(p.isReal || p.real || p.mode === 'REAL' || p.mode === 'real' || p.mode === true);
+  if (!real && p.bot && p.uid && p.bot.realMode?.[p.uid]) real = true;
+
+  const percentNum = Math.min(Math.max(Number(p.percent ?? 100), 0), 100);
+
+  const base = { bot: p.bot, uid: String(p.uid || ''), symbol: p.symbol, percent: percentNum };
+
+  return real ? sellPercentReal(base) : sellPercentDemo(base);
+}
+
+// Alias de quote orientado a USDC (mismo comportamiento que quoteSell)
+export function quoteToUSDC(params){ return quoteSell(params); }
+export const getBeste,te        = quoteSell;
+export const quoteBest           = quoteSell;
+export const executeSellPercent  = sellPercentDemo;
+
+export default {
+  quoteSell, quoteBest, getBeste,te,
+  sellPercentDemo, sellPercentReal, executeSellPercent,
+};

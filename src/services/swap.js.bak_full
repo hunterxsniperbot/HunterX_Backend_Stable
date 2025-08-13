@@ -1,0 +1,12 @@
+
+export async function quoteBest(params){
+  try {
+    if (typeof getBestRoute === 'function') {
+      return await getBestRoute(params);
+    }
+  } catch {}
+  // Fallback: si no hay enrutador, cotizamos simple
+  return quoteSell(params);
+}
+
+export default { quoteBest };

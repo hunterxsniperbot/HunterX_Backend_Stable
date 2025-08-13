@@ -1,6 +1,112 @@
-
-function bpsOf(pct){ return Math.round(Number(pct)*100); }
+// src/commands/wallet.js — posiciones abiertas (vivo) + vender
 import { buildMetrics } from '../services/positions.js';
+// Aseguramos también quoteToUSDC para cotizar si hace falta
+import { sellToUSDC, quoteToUSDC } from '../services/swap.js';
+
+  // --- callbacks para botones de venta (wallet:sell:xx:MODE:<symbol>[:<mint>[:<qty>]])
+  bot.on('callback_query', async (q) => {
+    try {
+      const data = q?.data || '';
+      if (!/^wallet:(sell|quote):/i.test(data)) return;
+
+      const uid    = String(q.from.id);
+      const chatId = q.message?.chat?.id || q.message?.chat_id;
+      const mid    = q.message?.message_id;
+
+      // Formatos soportados:
+      // wallet:sell:25:DEMO:SOL
+      // wallet:sell:50:REAL:SOL:So1111...:123.45
+      // wallet:quote:100:DEMO:SOL
+      const parts = data.split(':'); // [wallet, action, pct, MODE, symbol, mint?, qty?]
+      const action  = (parts[1] || 'sell').toLowerCase();
+      const percent = Number(parts[2] || '100');
+      const mode    = (parts[3] || 'DEMO').toUpperCase();
+      const symbol  = decodeURIComponent((parts[4] || '').trim());
+      const mint    = parts[5] && parts[5].length > 0 ? parts[5].trim() : undefined;
+      let qty       = parts[6] ? Number(parts[6]) : NaN;
+
+      const real = (mode === 'REAL') && !!(bot.realMode?.[uid]);
+
+      // Busca qty si viene vacío
+      if (!Number.isFinite(qty) || qty <= 0) {
+        try {
+          const posMod = await import('../services/positions.js');
+          const get = posMod.getOpenPositions || posMod.readOpenPositions || posMod.listOpenPositions;
+          if (typeof get === 'function') {
+            const rows = await get({ uid, mode });
+            const hit  = Array.isArray(rows)
+              ? rows.find(r =>
+                  (r.symbol && r.symbol.toUpperCase() === symbol.toUpperCase()) ||
+                  (mint && r.mint && r.mint === mint)
+                )
+              : null;
+            if (hit && Number.isFinite(Number(hit.qty))) {
+              qty = Number(hit.qty);
+            }
+          }
+        } catch (_) {}
+      }
+
+      await (q.id ? bot.answerCallbackQuery(q.id).catch(()=>{}) : Promise.resolve());
+
+      if (action === 'quote') {
+        if (!Number.isFinite(qty) || qty <= 0) {
+          return bot.sendMessage(chatId, '⚠️ No tengo cantidad para cotizar. Reabre /wallet y toca el botón desde la tarjeta de la posición.', { parse_mode: 'HTML' });
+        }
+        const qt = await quoteToUSDC({ symbol, mint, qty, percent });
+        if (!qt?.ok) {
+          return bot.sendMessage(chatId, '⚠️ No se pudo obtener cotización ahora mismo.', { parse_mode:'HTML' });
+        }
+        const html = [
+          `<b>📐 Cotización</b>`,
+          `• Token: <b>${symbol || (mint || '').slice(0,6)+'…'}</b>`,
+          `• Cantidad: <b>${qty}</b>`,
+          `• Vender: <b>${percent}%</b>`,
+          `• Precio: <b>$${qt.priceUsd.toFixed(6)}</b>`,
+          `• Recibir ≈ <b>$${qt.toUSDC.toFixed(2)} USDC</b>`,
+        ].join('\n');
+        return bot.sendMessage(chatId, html, { parse_mode:'HTML' });
+      }
+
+      // SELL (DEMO por ahora; REAL queda en modo simulado seguro dentro de sellToUSDC)
+      if (!Number.isFinite(qty) || qty <= 0) {
+        return bot.sendMessage(chatId, '⚠️ No tengo cantidad para vender. Reabre /wallet y toca el botón desde la tarjeta de la posición.', { parse_mode: 'HTML' });
+      }
+
+      const res = await sellToUSDC({ bot, uid, symbol, mint, qty, percent, real });
+      if (!res?.ok) {
+        return bot.sendMessage(chatId, '⚠️ No se pudo ejecutar la orden (simulada).', { parse_mode:'HTML' });
+      }
+
+      const sim = res.simulated ? ' (simulado)' : '';
+      const html = [
+        `<b>✅ Venta${sim} ejecutada</b>`,
+        `• Modo: <b>${real ? 'REAL' : 'DEMO'}</b>`,
+        `• Token: <b>${symbol || (mint || '').slice(0,6)+'…'}</b>`,
+        `• Vendido: <b>${percent}%</b> de <b>${qty}</b>`,
+        res.quote?.priceUsd ? `• Precio usado: <b>$${Number(res.quote.priceUsd).toFixed(6)}</b>` : null,
+        res.receivedUSDC ? `• Recibido: <b>$${Number(res.receivedUSDC).toFixed(2)} USDC</b>` : null,
+        res.txid ? `• TX: <code>${res.txid}</code>` : null,
+      ].filter(Boolean).join('\n');
+
+      await bot.sendMessage(chatId, html, { parse_mode:'HTML' });
+
+      // TIP: acá podríamos refrescar /wallet automáticamente invocando su renderer, si querés.
+    } catch (e) {
+      try { if (q?.id) await bot.answerCallbackQuery(q.id, { text: 'Error' }); } catch {}
+      console.error('wallet callback err', e?.message || e);
+    }
+  });
+import * as trading from '../services/trading.js'; // asume logTrade/logEvent
+
+const sleep = (ms)=> new Promise(r=>setTimeout(r,ms));
+function jitter(ms){ return Math.max(1000, Math.floor(ms * (0.9 + Math.random()*0.2))); }
+function nextDelay({prevMs, changed, errorCount, baseMs}){
+  if (errorCount>0) return Math.min((prevMs||baseMs)*1.5, 30000);
+  return changed ? baseMs : Math.min((prevMs||baseMs)+2000, 12000);
+}
+function fmtUSD(n){ return '$' + (Number(n||0)).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}); }
+function bpsOf(pct){ return Math.round(Number(pct)*100); }
 
 function renderPosition(p){
   const arrow = p.pnlPct>=0 ? '📈' : '📉';
@@ -34,7 +140,7 @@ function buildKeyboard(mode, which, idx){
 async function snapshot(bot, uid, max=10){
   const storeDemo = bot._store_demo?.[uid] || [];
   const storeReal = bot._store_real?.[uid] || [];
-  const m = await buildMetrics({ uid, max });
+  const m = await buildMetrics({ storeDemo, storeReal, max });
 
   const topD = m.demo.list;
   const topR = m.real.list;
@@ -87,6 +193,7 @@ async function handleSell(bot, uid, which, idx, pct, chatId, msgId){
   if (!pos || pos.qty<=0) throw new Error('Posición no encontrada');
 
   // Necesitamos precio actual para info
+  const { buildMetrics } = await import('../services/positions.js');
   const m = await buildMetrics({
     storeDemo: which==='d' ? store : [],
     storeReal: which==='r' ? store : [],
@@ -153,8 +260,6 @@ async function handleSell(bot, uid, which, idx, pct, chatId, msgId){
 }
 
 export default function registerWallet(bot){
-  // asegura callbacks de venta/cotización
-  ensureWalletCallbacks(bot);
   bot._walletState = bot._walletState || {};
 
   // /wallet [seg]|once|stop
@@ -271,8 +376,6 @@ export default function registerWallet(bot){
 
 
 // --- Callbacks de venta/cotización (definidos fuera y habilitados una sola vez) ---
-
-// --- Callbacks de venta/cotización (definidos fuera y habilitados una sola vez) ---
 async function ensureWalletCallbacks(bot) {
   if (bot._walletCbHandled) return;
   bot._walletCbHandled = true;
@@ -288,7 +391,7 @@ async function ensureWalletCallbacks(bot) {
       const uid    = String(q.from.id);
       const chatId = q.message?.chat?.id || q.message?.chat_id;
 
-      // Formato: wallet:sell:25:DEMO:SYM[:mint[:qty]]
+      // Formatos: wallet:sell:25:DEMO:SOL[:mint[:qty]]
       const p = data.split(':');
       const action  = (p[1] || 'sell').toLowerCase();
       const percent = Number(p[2] || '100');
@@ -299,7 +402,7 @@ async function ensureWalletCallbacks(bot) {
 
       const real = (mode === 'REAL') && !!(bot.realMode?.[uid]);
 
-      // Completar qty leyendo posiciones si falta
+      // Si falta cantidad, intentamos leerla de tus posiciones
       if (!Number.isFinite(qty) || qty <= 0) {
         const get = posMod.getOpenPositions || posMod.readOpenPositions || posMod.listOpenPositions;
         if (typeof get === 'function') {
@@ -318,38 +421,37 @@ async function ensureWalletCallbacks(bot) {
 
       if (action === 'quote') {
         if (!Number.isFinite(qty) || qty <= 0) {
-          return bot.sendMessage(chatId, '⚠️ No tengo cantidad para cotizar. Reabrí /wallet y usá el botón desde la tarjeta.', { parse_mode:'HTML' });
+          return bot.sendMessage(chatId, '⚠️ No tengo cantidad para cotizar. Reabre /wallet y usa el botón desde la tarjeta.', { parse_mode:'HTML' });
         }
         const qt = await quoteToUSDC({ symbol, mint, qty, percent });
         if (!qt?.ok) return bot.sendMessage(chatId, '⚠️ No se pudo cotizar ahora mismo.', { parse_mode:'HTML' });
-
         const html = [
           '<b>📐 Cotización</b>',
-          '• Token: <b>' + (symbol || ((mint || '').slice(0,6) + '…')) + '</b>',
-          '• Cantidad: <b>' + qty + '</b>',
-          '• Vender: <b>' + percent + '%</b>',
-          (qt.priceUsd != null ? ('• Precio: <b>$' + Number(qt.priceUsd).toFixed(6) + '</b>') : null),
-          (qt.toUSDC   != null ? ('• Recibir ≈ <b>$' + Number(qt.toUSDC).toFixed(2) + ' USDC</b>') : null),
+          `• Token: <b>${symbol || (mint || '').slice(0,6)+'…'}</b>`,
+          `• Cantidad: <b>${qty}</b>`,
+          `• Vender: <b>${percent}%</b>`,
+          qt.priceUsd ? `• Precio: <b>$${Number(qt.priceUsd).toFixed(6)}</b>` : null,
+          qt.toUSDC   ? `• Recibir ≈ <b>$${Number(qt.toUSDC).toFixed(2)} USDC</b>` : null,
         ].filter(Boolean).join('\n');
         return bot.sendMessage(chatId, html, { parse_mode:'HTML' });
       }
 
       // SELL
       if (!Number.isFinite(qty) || qty <= 0) {
-        return bot.sendMessage(chatId, '⚠️ No tengo cantidad para vender. Reabrí /wallet y usá el botón desde la tarjeta.', { parse_mode:'HTML' });
+        return bot.sendMessage(chatId, '⚠️ No tengo cantidad para vender. Reabre /wallet y usa el botón desde la tarjeta.', { parse_mode:'HTML' });
       }
 
       const res = await sellToUSDC({ bot, uid, symbol, mint, qty, percent, real });
       const sim = res?.simulated ? ' (simulado)' : '';
       const html = [
-        '<b>✅ Venta' + sim + ' ejecutada</b>',
-        '• Modo: <b>' + (real ? 'REAL' : 'DEMO') + '</b>',
-        '• Token: <b>' + (symbol || ((mint || '').slice(0,6) + '…')) + '</b>',
-        '• Vendido: <b>' + percent + '%</b> de <b>' + qty + '</b>',
-        (res?.quote?.priceUsd != null ? ('• Precio: <b>$' + Number(res.quote.priceUsd).toFixed(6) + '</b>') : null),
-        (res?.receivedUSDC != null ? ('• Recibido: <b>$' + Number(res.receivedUSDC).toFixed(2) + ' USDC</b>') : null),
-        (res?.txid ? ('• TX: <code>' + res.txid + '</code>') : null),
-      ].filter(Boolean).join('\n');
+        `<b>✅ Venta${sim} ejecutada</b>`,
+        `• Modo: <b>${real ? 'REAL' : 'DEMO'}</b>`,
+        `• Token: <b>${symbol || (mint || '').slice(0,6)+'…'}</b>`,
+        `• Vendido: <b>${percent}%</b> de <b>${qty}</b>`,
+        res?.quote?.priceUsd ? `• Precio: <b>$${Number(res.quote.priceUsd).toFixed(6)}</b>` : null,
+        res?.receivedUSDC ? `• Recibido: <b>$${Number(res.receivedUSDC).toFixed(2)} USDC</b>` : null,
+        res?.txid ? `• TX: <code>${res.txid}</code>` : null,
+      ].filter(Boolean).join('\\n');
 
       await bot.sendMessage(chatId, html, { parse_mode:'HTML' });
     } catch (e) {

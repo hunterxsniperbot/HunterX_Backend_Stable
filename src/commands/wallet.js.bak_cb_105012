@@ -1,6 +1,6 @@
 
+function fmtUSD(n){ return '$' + (Number(n||0)).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}); }
 function bpsOf(pct){ return Math.round(Number(pct)*100); }
-import { buildMetrics } from '../services/positions.js';
 
 function renderPosition(p){
   const arrow = p.pnlPct>=0 ? '📈' : '📉';
@@ -34,7 +34,7 @@ function buildKeyboard(mode, which, idx){
 async function snapshot(bot, uid, max=10){
   const storeDemo = bot._store_demo?.[uid] || [];
   const storeReal = bot._store_real?.[uid] || [];
-  const m = await buildMetrics({ uid, max });
+  const m = await buildMetrics({ storeDemo, storeReal, max });
 
   const topD = m.demo.list;
   const topR = m.real.list;
@@ -87,6 +87,7 @@ async function handleSell(bot, uid, which, idx, pct, chatId, msgId){
   if (!pos || pos.qty<=0) throw new Error('Posición no encontrada');
 
   // Necesitamos precio actual para info
+  const { buildMetrics } = await import('../services/positions.js');
   const m = await buildMetrics({
     storeDemo: which==='d' ? store : [],
     storeReal: which==='r' ? store : [],

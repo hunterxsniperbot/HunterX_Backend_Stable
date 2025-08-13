@@ -1,6 +1,20 @@
 
 function bpsOf(pct){ return Math.round(Number(pct)*100); }
 import { buildMetrics } from '../services/positions.js';
+// --- helpers tiempo/loop ---
+const sleep = (ms)=> new Promise(r=>setTimeout(r,ms));
+function jitter(ms){ return Math.max(1000, Math.floor(ms * (0.9 + Math.random()*0.2))); }
+function nextDelay({prevMs, changed, errorCount, baseMs}){
+  if (errorCount>0) return Math.min((prevMs||baseMs)*1.5, 30000);
+  return changed ? baseMs : Math.min((prevMs||baseMs)+2000, 12000);
+}
+// --- helpers tiempo/loop ---
+const sleep = (ms)=> new Promise(r=>setTimeout(r,ms));
+function jitter(ms){ return Math.max(1000, Math.floor(ms * (0.9 + Math.random()*0.2))); }
+function nextDelay({prevMs, changed, errorCount, baseMs}){
+  if (errorCount>0) return Math.min((prevMs||baseMs)*1.5, 30000);
+  return changed ? baseMs : Math.min((prevMs||baseMs)+2000, 12000);
+}
 
 function renderPosition(p){
   const arrow = p.pnlPct>=0 ? '📈' : '📉';

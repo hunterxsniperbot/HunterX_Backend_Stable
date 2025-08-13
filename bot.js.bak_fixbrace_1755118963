@@ -1,0 +1,209 @@
+import dotenv from "dotenv";
+dotenv.config({ override: true });
+
+// bot.js — HunterX (modo TURBO)
+// - Guards anti-doble inicio
+// - Slash menu único (sin reply-keyboard)
+// - Registro explícito de comandos (sin whitelist-loader)
+// - Limpia teclados persistentes heredados
+
+import TelegramBot from 'node-telegram-bot-api';
+
+// Handlers (comandos)
+import registerAjustes    from './src/commands/ajustes.js';
+import registerSniperReset from './src/commands/sniperReset.js';
+import registerAutoSniper from './src/commands/autoSniper.js';
+import registerMensaje    from './src/commands/mensaje.js';
+import registerRegistro   from './src/commands/registro.js';
+import registerHealth     from './src/commands/health.js';
+
+// Servicios que pasamos a los handlers
+import * as quickNodeClient from './src/services/quicknode.js';
+import * as phantomClient   from './src/services/phantom.js';
+import * as trading         from './src/services/trading.js';
+import registerStatus     from './src/commands/status.js';
+import registerInitSheets from './src/commands/initSheets.js';
+import registerPick       from './src/commands/pick.js';
+import registerMode       from './src/commands/mode.js';
+
+/* ────────────────────────────────────────────────────────────────────────── */
+/* Guards anti-doble inicio                                                  */
+/* ────────────────────────────────────────────────────────────────────────── */
+if (global.__HX_STARTED__) {
+  console.log('⚠️ Bot ya estaba iniciado, evito doble bootstrap');
+} else {
+  global.__HX_STARTED__ = true;
+}
+
+let bot = global.__HX_BOT__;
+if (!bot) {
+  const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+  if (!TOKEN) {
+    console.error('❌ Falta TELEGRAM_BOT_TOKEN en .env');
+    process.exit(1);
+  }
+
+  // Sólo POLLING (webhook lo dejamos para Render más adelante)
+  bot = new TelegramBot(TOKEN, { polling: true });
+  global.__HX_BOT__ = bot;
+
+  bot.on('polling_error', (e) => {
+    const m = String(e?.message || e);
+    // Silenciar ruidos típicos de red intermitente
+    if (
+      m.includes('EFATAL') ||
+      m.includes('ETIMEDOUT') ||
+      m.includes('ECONNRESET') ||
+      m.includes('ECONNABORTED') ||
+      m.includes('ENOTFOUND')
+    ) {
+      console.log('🌐 [polling] aviso:', m);
+    } else {
+      console.error('❌ [polling_error]', m);
+    }
+  });
+
+  console.log('🛰️ [TG] Modo: POLLING');
+}
+
+/* ────────────────────────────────────────────────────────────────────────── */
+/* ────────────────────────────────────────────────────────────────────────── */
+/* ────────────────────────────────────────────────────────────────────────── */
+/* Menú de comandos (slash)                                                  */
+/* ────────────────────────────────────────────────────────────────────────── */
+async function setSlashMenu() {
+  if (process.env.NO_SLASH === "1") return;
+  if (globalThis.__HX_SLASH_SET__ || globalThis.__HX_SLASH_RUNNING__) return;
+  globalThis.__HX_SLASH_RUNNING__ = true;
+
+  const commands = [
+    { command: 'health',     description: 'Conexiones activas' },
+    { command: 'autosniper', description: 'Activar sniper automático' },
+    { command: 'real',       description: 'Modo trading REAL' },
+    { command: 'demo',       description: 'Modo DEMO (simulación)' },
+    { command: 'stop',       description: 'Detener sniper' },
+    { command: 'wallet',     description: 'Ver posiciones abiertas' },
+    { command: 'registro',   description: 'Ver posiciones cerradas' },
+    { command: 'discord',    description: 'Tendencias en Discord' },
+    { command: 'ajustes',    description: 'Configurar sniper' },
+    { command: 'mensaje',    description: 'Ayuda / panel' },
+  ];
+
+  try {
+    await bot.setMyCommands(commands);
+    console.log('🟦 [Slash] comandos seteados');
+    globalThis.__HX_SLASH_SET__ = true;
+  } catch (e) {
+    console.error('❌ setMyCommands:', e?.message || e);
+  } finally {
+  }
+}
+}
+
+// Ejecuta el menú de slash al iniciar
+(async () => {
+  try { await setSlashMenu(); }
+  catch (e) { console.error('❌ setSlashMenu:', e?.message || e); }
+})();
+/* ────────────────────────────────────────────────────────────────────────── */
+/* Limpieza de reply-keyboards heredados                                     */
+/* (evita el teclado gris abajo; throttle 60s por chat para no spamear)      */
+/* ────────────────────────────────────────────────────────────────────────── */
+bot._kbCleanAt = bot._kbCleanAt || {};
+bot.on('message', async (msg) => {
+  try {
+    if (msg.via_bot || msg.reply_to_message) return;
+    const chatId = msg.chat.id;
+    const last = bot._kbCleanAt[chatId] || 0;
+    if (Date.now() - last < 60_000) return;
+    await bot.sendMessage(chatId, ' ', { reply_markup: { remove_keyboard: true } });
+    bot._kbCleanAt[chatId] = Date.now();
+  } catch { /* noop */ }
+});
+/* ────────────────────────────────────────────────────────────────────────── */
+/* Registro de handlers (explícitos)                                         */
+/* ────────────────────────────────────────────────────────────────────────── */
+/* Registro de handlers (explícitos)                                         */
+/* ────────────────────────────────────────────────────────────────────────── */
+if (!global.__HX_HANDLERS_REGISTERED__) {
+  console.log('🔧 Iniciando bot…');
+    global.__HX_HANDLERS_REGISTERED__ = true;
+
+  try {
+    registerAjustes(bot, { quickNodeClient, phantomClient });
+    console.log('✅ Handler cargado: ajustes.js');
+  } catch (e) {
+    console.error('❌ ajustes:', e?.message || e);
+  }
+
+  try {
+    registerAutoSniper(bot, { quickNodeClient, phantomClient, trading });
+  registerSniperReset(bot);
+    console.log('✅ Handler cargado: autoSniper.js');
+  } catch (e) {
+    console.error('❌ autoSniper:', e?.message || e);
+  }
+
+  try {
+  } catch (e) {
+  }
+
+  try {
+    registerRegistro(bot, { trading });
+    console.log('✅ Handler cargado: registro.js');
+  } catch (e) {
+    console.error('❌ registro:', e?.message || e);
+  }
+
+  try {
+    registerMensaje(bot);
+    console.log('✅ Handler cargado: mensaje.js');
+  } catch (e) {
+    console.error('❌ mensaje:', e?.message || e);
+  }
+
+  try {
+    registerHealth(bot, { quickNodeClient, phantomClient });
+  registerStatus(bot);
+  registerInitSheets(bot);
+  registerPick(bot);
+  registerMode(bot);
+    console.log('✅ Handler cargado: health.js');
+  } catch (e) {
+    console.error('❌ health:', e?.message || e);
+  }
+
+  await setSlashMenu();
+
+  console.log('🤖 HunterX Bot arrancado y escuchando comandos');
+} else {
+  console.log('⚠️ Handlers ya estaban registrados (evito duplicar)');
+}
+
+/* ────────────────────────────────────────────────────────────────────────── */
+/* Shortcuts opcionales                                                      */
+/* ────────────────────────────────────────────────────────────────────────── */
+// Si querés que /discord sólo devuelva el link (sin handler dedicado):
+bot.onText(/^\/discord$/, (msg) => {
+  bot.sendMessage(
+    msg.chat.id,
+    '👾 Discord tendencias: https://discord.gg/tu-invite',
+    { disable_web_page_preview: true }
+  ).catch(()=>{});
+});
+
+/* ────────────────────────────────────────────────────────────────────────── */
+/* Limpieza de reply-keyboards heredados                                     */
+/* (evita el teclado gris abajo; throttle 60s por chat para no spamear)      */
+/* ────────────────────────────────────────────────────────────────────────── */
+  /* ────────────────────────────────────────────────────────────────────────── */
+
+  // Ejecuta el menú de slash al iniciar
+  (async () => {
+    try { await setSlashMenu(); }
+    catch (e) { console.error('❌ setSlashMenu:', e?.message || e); }
+
+  /* ────────────────────────────────────────────────────────────────────────── */
+  })();
+
+  /* Limpieza de reply-keyboards heredados                                     */
