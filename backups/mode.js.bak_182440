@@ -1,0 +1,46 @@
+// src/commands/mode.js — alterna Modo REAL/DEMO por usuario
+
+import * as state from '../services/state.js';
+
+// Helper local por si lo necesitamos
+function escHtml(s){
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+export default function registerMode(bot){
+  // Estado en memoria por usuario
+  bot.realMode = bot.realMode || {};
+
+  // Cargar persistencia (si existe) sin bloquear
+  state.getRealModeMap?.()
+    .then((map)=>{ if (map && typeof map==='object') bot.realMode = { ...map, ...bot.realMode }; })
+    .catch(()=>{});
+
+  // /real  → activa REAL
+  bot.removeTextListener?.(/^\s*\/real\s*$/i);
+  bot.onText(/^\s*\/real\s*$/i, async (msg) => {
+    const chatId = msg.chat.id;
+    const uid    = String(msg.from.id);
+    if (bot.realMode[uid]) {
+      return bot.sendMessage(chatId, '<b>Ya estabas en MODO REAL</b>', { parse_mode:'HTML' });
+    }
+    bot.realMode[uid] = true;
+    state.setRealMode?.(uid, true).catch(()=>{});
+    return bot.sendMessage(chatId, '✅ <b>Modo REAL activado</b>. Las órdenes ahora irán a <b>REAL</b>.', { parse_mode:'HTML' });
+  });
+
+  // /demo → activa DEMO
+  bot.removeTextListener?.(/^\s*\/demo\s*$/i);
+  bot.onText(/^\s*\/demo\s*$/i, async (msg) => {
+    const chatId = msg.chat.id;
+    const uid    = String(msg.from.id);
+    if (!bot.realMode[uid]) {
+      return bot.sendMessage(chatId, '<b>Ya estabas en MODO DEMO</b>', { parse_mode:'HTML' });
+    }
+    bot.realMode[uid] = false;
+    state.setRealMode?.(uid, false).catch(()=>{});
+    return bot.sendMessage(chatId, '🧪 <b>Modo DEMO activado</b>. Las órdenes ahora se simulan.', { parse_mode:'HTML' });
+  });
+
+  console.log('✅ Handler cargado: mode.js');
+}

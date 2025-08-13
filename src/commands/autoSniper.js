@@ -711,7 +711,7 @@ export default function registerAutoSniper(bot, { phantomClient } = {}) {
     }
     if (arg === 'on' || arg === '') {
       if (bot._sniperOn[uid]) {
-        return bot.sendMessage(chatId, '<b>🤖 Sniper ya estaba ON</b>', { parse_mode:'HTML' });
+        return bot.sendMessage(chatId, '<b>🤖 Sniper ya estaba ON</b> (modo: <b>' + (bot.realMode?.[uid]?'REAL':'DEMO') + '</b>)', { parse_mode:'HTML' });
       }
       bot._sniperOn[uid] = true;
       state.setSniperOn?.(uid, true).catch(()=>{});
@@ -720,7 +720,8 @@ export default function registerAutoSniper(bot, { phantomClient } = {}) {
       _clearTracked(bot, uid);
       _ensureAbort(bot, uid);
 
-      return bot.sendMessage(chatId, '<b>🤖 Sniper ON</b> (escaneo continuo con prioridad por franjas).', { parse_mode:'HTML' });
+      const mode = bot.realMode?.[uid] ? 'REAL' : 'DEMO';
+      return bot.sendMessage(chatId, '<b>🤖 Sniper ON</b> — Modo: <b>' + mode + '</b> (modo: <b>' + (bot.realMode?.[uid]?'REAL':'DEMO') + '</b>). Escaneo continuo con prioridad por franjas.', { parse_mode:'HTML' });
 
       // Iniciar loop periódico (trackeado) + corrida inmediata
       if (bot._sniperLoops?.[uid]) clearInterval(bot._sniperLoops[uid]);

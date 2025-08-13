@@ -30,3 +30,4 @@ sa.json
 
 # backups
 backup-*.tar.gz
+.env

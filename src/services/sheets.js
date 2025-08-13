@@ -1,189 +1,118 @@
-// src/services/sheets.js — Google Sheets con "googleapis" (ESM, estable)
+// src/services/sheets.js — Google Sheets con auth por JWT + caché simple
+import { GoogleSpreadsheet } from 'google-spreadsheet';
+import { JWT } from 'google-auth-library';
 import fs from 'fs';
 import path from 'path';
-import { google } from 'googleapis';
 
-const SCOPES = ['https://www.googleapis.com/auth/spreadsheets'];
+// -------- Config --------
+const SHEET_ID =
+  process.env.GOOGLE_SHEETS_ID ||
+  process.env.SHEETS_ID ||
+  '';
 
-// Encabezados por defecto para tus trades
-const DEFAULT_HEADERS = [
-  'fecha_hora','mode','type','token','mint',
-  'entrada_usd','salida_usd','inversion_usd',
-  'pnl_usd','pnl_pct','slippage_pct',
-  'volumen_24h_usd','liquidez_usd','holders','fdv_usd','marketcap_usd',
-  'red','fuente','url','extra'
-];
+if (!SHEET_ID) {
+  console.warn('⚠️ GOOGLE_SHEETS_ID no está definido. sheets.js funcionará, pero fallará al abrir el doc.');
+}
 
-let _sheets = null;
-let _spreadsheetId = null;
-
-/** Auth + cliente Sheets */
-async function getSheetsClient() {
-  if (_sheets) return _sheets;
-
-  const keyFile = process.env.GOOGLE_APPLICATION_CREDENTIALS;
-  const spreadsheetId = process.env.GOOGLE_SHEETS_ID;
-
-  if (!keyFile) throw new Error('GOOGLE_APPLICATION_CREDENTIALS no definido');
-  if (!spreadsheetId) throw new Error('GOOGLE_SHEETS_ID no definido');
-
-  // Valida que exista el JSON
-  const full = path.resolve(keyFile);
-  if (!fs.existsSync(full)) {
-    throw new Error(`No existe ${full} (service account)`);
+// 1) Cargar credenciales del SA (service account) desde:
+//    - GOOGLE_SA_JSON_PATH (ruta a .json)
+//    - GOOGLE_SA_JSON (json en una sola variable)
+//    - GOOGLE_SA_EMAIL + GOOGLE_SA_PRIVATE_KEY (pareja suelta)
+function loadServiceAccountCreds() {
+  // a) archivo
+  const p = process.env.GOOGLE_SA_JSON_PATH;
+  if (p) {
+    const abs = path.isAbsolute(p) ? p : path.join(process.cwd(), p);
+    const raw = fs.readFileSync(abs, 'utf8');
+    return JSON.parse(raw);
   }
-
-  const auth = new google.auth.GoogleAuth({
-    keyFile: full,
-    scopes: SCOPES
-  });
-
-  const client = await auth.getClient();
-  const sheets = google.sheets({ version: 'v4', auth: client });
-  _sheets = sheets;
-  _spreadsheetId = spreadsheetId;
-  return sheets;
-}
-
-/** Trae metadata de la hoja (lista de pestañas) */
-async function getSpreadsheet() {
-  const sheets = await getSheetsClient();
-  const { data } = await sheets.spreadsheets.get({
-    spreadsheetId: _spreadsheetId
-  });
-  return data;
-}
-
-/** Asegura que exista la pestaña (sheet) con ese título */
-async function ensureSheetExists(title) {
-  const sheets = await getSheetsClient();
-  const meta = await getSpreadsheet();
-  const exists = (meta.sheets || []).some(s => s.properties?.title === title);
-  if (exists) return;
-
-  await sheets.spreadsheets.batchUpdate({
-    spreadsheetId: _spreadsheetId,
-    requestBody: {
-      requests: [{
-        addSheet: {
-          properties: { title }
-        }
-      }]
-    }
-  });
-}
-
-/** Lee la fila 1 (encabezados) de una pestaña */
-async function getHeaderRow(title) {
-  const sheets = await getSheetsClient();
-  const range = `${title}!1:1`;
-  const { data } = await sheets.spreadsheets.values.get({
-    spreadsheetId: _spreadsheetId,
-    range
-  });
-  const row = data.values?.[0] || [];
-  return row.map(v => String(v || '').trim());
-}
-
-/** Convierte número de columna (1..N) a letra A1 (A,B,..,AA,AB,...) */
-function colToA1(n) {
-  let s = '';
-  while (n > 0) {
-    const m = (n - 1) % 26;
-    s = String.fromCharCode(65 + m) + s;
-    n = Math.floor((n - 1) / 26);
+  // b) JSON inline
+  const inlineJson = process.env.GOOGLE_SA_JSON;
+  if (inlineJson) {
+    return JSON.parse(inlineJson);
   }
-  return s;
-}
-
-/** Escribe encabezados en A1 */
-async function setHeaderRow(title, headers) {
-  const sheets = await getSheetsClient();
-  const endCol = colToA1(headers.length);
-  const range = `${title}!A1:${endCol}1`;
-  await sheets.spreadsheets.values.update({
-    spreadsheetId: _spreadsheetId,
-    range,
-    valueInputOption: 'RAW',
-    requestBody: { values: [headers] }
-  });
-}
-
-/** Asegura encabezados por defecto (o los que pases) y crea pestaña si falta */
-async function ensureHeaderRow(title, headers = DEFAULT_HEADERS) {
-  try {
-    await ensureSheetExists(title);
-    const current = await getHeaderRow(title);
-    if (current.length === 0) {
-      await setHeaderRow(title, headers);
-      console.log(`[Sheets] Headers creados en "${title}" (${headers.length} cols)`);
-      return headers;
-    }
-    // si ya existen, devolvé los actuales
-    return current;
-  } catch (e) {
-    console.error('[Sheets] ensureHeaderRow error:', e?.message || e);
-    throw e;
+  // c) email + private key
+  const email = process.env.GOOGLE_SA_EMAIL;
+  const key   = process.env.GOOGLE_SA_PRIVATE_KEY;
+  if (email && key) {
+    return { client_email: email, private_key: key };
   }
+  throw new Error('Service Account de Google Sheets no configurado (usa GOOGLE_SA_JSON_PATH o GOOGLE_SA_JSON o GOOGLE_SA_EMAIL/GOOGLE_SA_PRIVATE_KEY)');
 }
 
-/** Agrega/actualiza encabezados si vienen nuevos campos en obj */
-async function ensureHeaderHasKeys(title, headers, obj) {
-  const keys = Object.keys(obj || {});
-  const add = keys.filter(k => !headers.includes(k));
-  if (add.length === 0) return headers;
-
-  const newHeaders = [...headers, ...add];
-  await setHeaderRow(title, newHeaders);
-  console.log(`[Sheets] Headers ampliados en "${title}": +${add.length} (${add.join(', ')})`);
-  return newHeaders;
+// 2) Crear auth JWT + abrir documento
+async function openDoc() {
+  const creds = loadServiceAccountCreds();
+  const auth = new JWT({
+    email: creds.client_email,
+    key: creds.private_key,
+    scopes: [
+      'https://www.googleapis.com/auth/spreadsheets',
+      'https://www.googleapis.com/auth/drive'
+    ],
+  });
+  const doc = new GoogleSpreadsheet(SHEET_ID, auth);
+  await doc.loadInfo();
+  return doc;
 }
 
-/** Normaliza valor a celda (string/number) */
-function toCell(v) {
-  if (v == null) return '';
-  if (typeof v === 'object') return JSON.stringify(v);
-  return v;
-}
-
-/** Inserta fila acorde a encabezados (auto-expande si hay campos nuevos) */
-async function appendRow(obj, { tabTitle } = {}) {
-  const title = tabTitle || 'Hoja 1';
-  const sheets = await getSheetsClient();
-
-  let headers = await ensureHeaderRow(title, DEFAULT_HEADERS);
-  headers = await ensureHeaderHasKeys(title, headers, obj);
-
-  const row = headers.map(h => toCell(obj[h]));
-  const range = `${title}!A1`;
-
-  try {
-    await sheets.spreadsheets.values.append({
-      spreadsheetId: _spreadsheetId,
-      range,
-      valueInputOption: 'USER_ENTERED',
-      insertDataOption: 'INSERT_ROWS',
-      requestBody: { values: [row] }
+// 3) Helper: obtener hoja por nombre (crea si no existe, opcional)
+async function getSheetByTitle(doc, title, { createIfMissing = false, headerValues = null } = {}) {
+  let sheet = doc.sheetsByTitle[title];
+  if (!sheet && createIfMissing) {
+    sheet = await doc.addSheet({
+      title,
+      headerValues: headerValues || ['timestamp', 'side', 'symbol', 'mint', 'qty', 'priceUsd', 'txid', 'note']
     });
-    return true;
-  } catch (e) {
-    console.error('[Sheets] appendRow error:', e?.message || e);
-    return false;
   }
+  if (!sheet) throw new Error(`Hoja "${title}" no encontrada`);
+  return sheet;
 }
 
-/** Decide pestaña DEMO/REAL y escribe el trade */
-async function appendTrade(trade) {
-  const mode = String(trade?.mode || 'DEMO').toUpperCase();
-  const title = (mode === 'REAL')
-    ? (process.env.SHEETS_TAB_REAL || 'REAL')
-    : (process.env.SHEETS_TAB_DEMO || 'DEMO');
+// -------- API pública --------
 
-  return appendRow(trade, { tabTitle: title });
+// Lee todas las filas de una pestaña (array de objetos)
+export async function readRows(tab) {
+  const doc = await openDoc();
+  const sheet = await getSheetByTitle(doc, tab, { createIfMissing: false });
+  const rows = await sheet.getRows();
+  // Normalizamos a objetos simples
+  return rows.map(r => ({ ...r.toObject() }));
 }
 
-export default {
-  ensureHeaderRow,
-  appendRow,
-  appendTrade
-};
+// Caché simple por pestaña (para no pegarle muy seguido a Sheets)
+const _cache = new Map(); // tab -> { t:number, rows:Array }
+const ROWS_TTL_MS = 7000;
+
+export async function readRowsCached(tab) {
+  const hit = _cache.get(tab);
+  const now = Date.now();
+  if (hit && (now - hit.t) < ROWS_TTL_MS) return hit.rows;
+  const rows = await readRows(tab);
+  _cache.set(tab, { t: now, rows });
+  return rows;
+}
+
+// Agrega una fila (obj con claves = encabezados)
+export async function appendRow(tab, obj) {
+  const doc = await openDoc();
+  const sheet = await getSheetByTitle(doc, tab, { createIfMissing: true });
+  await sheet.addRow(obj);
+  // invalidar caché
+  _cache.delete(tab);
+}
+
+// Sobrescribe todas las filas (array de objetos)
+export async function writeRows(tab, rows) {
+  const doc = await openDoc();
+  const sheet = await getSheetByTitle(doc, tab, { createIfMissing: true });
+  // Borramos todo y re-escribimos
+  await sheet.clear();
+  const headers = Object.keys(rows[0] || { timestamp: '', side: '', symbol: '' });
+  await sheet.setHeaderRow(headers);
+  if (rows.length) await sheet.addRows(rows);
+  _cache.delete(tab);
+}
+
+// Export agrupado (por si en otro lado hacen default import)
+export default { readRows, readRowsCached, appendRow, writeRows };

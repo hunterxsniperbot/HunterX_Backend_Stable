@@ -1,5 +1,7 @@
 // src/services/trading.js — logging unificado a Sheets + Supabase (ESM)
-import sheets from './sheets.js';      // <- USAMOS NAMED IMPORTS
+import * as sheets from './sheets.js';      // <- USAMOS NAMED IMPORTS
+const { readRows, readRowsCached, appendRow, writeRows } = sheets;
+import { TAB_DEMO, TAB_REAL } from './tabs.js';
 import supabase from './supabase.js';  // helpers: upsertTrade, insertEvent, etc.
 
 function normalizeTrade(trade = {}) {

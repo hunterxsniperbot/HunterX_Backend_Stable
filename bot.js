@@ -22,6 +22,10 @@ import registerHealth     from './src/commands/health.js';
 import * as quickNodeClient from './src/services/quicknode.js';
 import * as phantomClient   from './src/services/phantom.js';
 import * as trading         from './src/services/trading.js';
+import registerStatus     from './src/commands/status.js';
+import registerInitSheets from './src/commands/initSheets.js';
+import registerPick       from './src/commands/pick.js';
+import registerMode       from './src/commands/mode.js';
 
 /* ────────────────────────────────────────────────────────────────────────── */
 /* Guards anti-doble inicio                                                  */
@@ -159,6 +163,10 @@ if (!global.__HX_HANDLERS_REGISTERED__) {
 
   try {
     registerHealth(bot, { quickNodeClient, phantomClient });
+  registerStatus(bot);
+  registerInitSheets(bot);
+  registerPick(bot);
+  registerMode(bot);
     console.log('✅ Handler cargado: health.js');
   } catch (e) {
     console.error('❌ health:', e?.message || e);
