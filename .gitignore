@@ -31,3 +31,6 @@ sa.json
 # backups
 backup-*.tar.gz
 .env
+node_modules/
+logs/
+.env

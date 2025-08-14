@@ -1,124 +1,154 @@
-// src/services/prices.js — agregador de precios (CG + CMC + DexScreener) con caché simple
+// ESM
+import axios from 'axios';
 
-const TTL_MS = Number(process.env.PRICES_TTL_MS || 10000); // 10s por defecto
-const _cache = new Map();
-const _now = () => Date.now();
-const _isSolAddress = (s) => /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(String(s||'').trim());
+// ===== Config desde env (con defaults sensatos) =====
+const ORDER = (process.env.PRICES_ORDER || 'JUPITER,DEXSCREENER,BIRDEYE,RAYDIUM,COINGECKO,CMC')
+  .split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
 
-function _fromCache(k){ const v=_cache.get(k); return (v && (_now()-v.t)<TTL_MS) ? v.data : null; }
-function _toCache(k,d){ _cache.set(k,{t:_now(),data:d}); return d; }
+const PRICES_TIMEOUT_MS   = +(process.env.PRICES_TIMEOUT_MS   || 5000);
+const TTL_MS              = +(process.env.PRICES_TTL_MS       || 15000);
 
-// ---------- CoinGecko ----------
-async function cgSimple(ids){
-  const url = `https://api.coingecko.com/api/v3/simple/price?ids=${encodeURIComponent(ids)}&vs_currencies=usd`;
-  const r = await fetch(url); if(!r.ok) throw new Error('CG simple http '+r.status);
-  return r.json();
+const BIRDEYE_API_KEY     = process.env.BIRDEYE_API_KEY || '';
+const CMC_API_KEY         = process.env.CMC_API_KEY     || ''; // (no lo usamos aquí, pero se deja por compat)
+
+// Mints conocidos
+const MINT_SOL  = 'So11111111111111111111111111111111111111112';
+const MINT_USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+const WELL_KNOWN = Object.freeze({
+  [MINT_SOL]: 'SOL',
+  [MINT_USDC]: 'USDC',
+});
+
+// ===== Infra de caché =====
+const priceCache = new Map(); // mint -> { price, source, ts }
+function now() { return Date.now(); }
+function setPriceCache(mint, price, source) {
+  priceCache.set(mint, { price, source, ts: now() });
 }
-async function cgTokenPriceSol(address){
-  const url = `https://api.coingecko.com/api/v3/simple/token_price/solana?contract_addresses=${encodeURIComponent(address)}&vs_currencies=usd`;
-  const r = await fetch(url); if(!r.ok) throw new Error('CG token http '+r.status);
-  return r.json();
-}
-
-// ---------- CoinMarketCap (requiere CMC_API_KEY) ----------
-async function cmcQuoteSymbol(sym){
-  const key = process.env.CMC_API_KEY; if(!key) throw new Error('NO_CMC_KEY');
-  const url = `https://pro-api.coinmarketcap.com/v2/cryptocurrency/quotes/latest?symbol=${encodeURIComponent(sym)}`;
-  const r = await fetch(url, { headers: { 'X-CMC_PRO_API_KEY': key } });
-  if(!r.ok) throw new Error('CMC http '+r.status);
-  return r.json();
-}
-async function cmcQuoteAddressSol(address){
-  const key = process.env.CMC_API_KEY; if(!key) throw new Error('NO_CMC_KEY');
-  const url = `https://pro-api.coinmarketcap.com/v2/cryptocurrency/quotes/latest?address=${encodeURIComponent(address)}&aux=is_active`;
-  const r = await fetch(url, { headers: { 'X-CMC_PRO_API_KEY': key } });
-  if(!r.ok) throw new Error('CMC http '+r.status);
-  return r.json();
+function getPriceCache(mint) {
+  const e = priceCache.get(mint);
+  if (!e) return null;
+  if (now() - e.ts > TTL_MS) return null;
+  return e;
 }
 
-// ---------- DexScreener ----------
-async function dexScreenerToken(address){
-  const url = `https://api.dexscreener.com/latest/dex/tokens/${encodeURIComponent(address)}`;
-  const r = await fetch(url); if(!r.ok) throw new Error('Dex http '+r.status);
-  return r.json();
+// ===== Helpers =====
+function httpGet(url, { headers = {}, timeout = PRICES_TIMEOUT_MS } = {}) {
+  return axios.get(url, { headers, timeout, validateStatus: s => s>=200 && s<500 })
+    .then(r => r.data)
+    .catch(() => null);
+}
+function parseFloatSafe(x) {
+  const n = +x;
+  return Number.isFinite(n) && n>0 ? n : null;
+}
+function isMint(m) { return typeof m === 'string' && m.length >= 32; }
+
+// ====== Proveedores ======
+
+// 1) Jupiter: https://price.jup.ag/v6/price?ids=<mint|symbol>
+async function pJUPITER(mint) {
+  const id = WELL_KNOWN[mint] || mint;
+  const url = `https://price.jup.ag/v6/price?ids=${encodeURIComponent(id)}`;
+  const data = await httpGet(url);
+  const price = data?.data?.[id]?.price ?? data?.data?.[mint]?.price;
+  const v = parseFloatSafe(price);
+  return v ? { source: 'JUPITER', price: v } : null;
 }
 
-// Mapeos útiles para CoinGecko por símbolo
-const CG_ID_MAP = { SOL: 'solana', USDC: 'usd-coin', USDT: 'tether' };
-
-/**
- * Devuelve precio USD (number) o null si no lo pudo obtener.
- * input: 'SOL' | 'SOL/USDC' | '<address SPL>'
- */
-export async function getPriceUSD(input, opts = {}){
-  try{
-    const raw = String(input||'').trim();
-    const key = 'p:'+raw.toUpperCase();
-    const hit = _fromCache(key); if(hit!=null) return hit;
-
-    // si viene par tipo "SOL/USDC", me quedo con la base
-    const base = raw.includes('/') ? raw.split('/')[0] : raw;
-    let price = null;
-
-    if (_isSolAddress(base)) {
-      // 1) CG por address
-      try {
-        const j = await cgTokenPriceSol(base);
-        const k = Object.keys(j)[0];
-        if(k && j[k] && j[k].usd != null) price = Number(j[k].usd);
-      } catch {}
-
-      // 2) CMC por address
-      if(price==null){
-        try {
-          const j = await cmcQuoteAddressSol(base);
-          const data = j?.data && Object.values(j.data)[0];
-          price = Number(data?.quote?.USD?.price);
-        } catch {}
-      }
-
-      // 3) DexScreener
-      if(price==null){
-        try {
-          const j = await dexScreenerToken(base);
-          const pairs = j?.pairs || [];
-          const best = pairs.sort((a,b)=>(Number(b.liquidity?.usd||0)-Number(a.liquidity?.usd||0)))[0];
-          if(best && best.priceUsd) price = Number(best.priceUsd);
-        } catch {}
-      }
-    } else {
-      // símbolo
-      const sym = base.toUpperCase();
-
-      // 1) CG por id conocido
-      const id = CG_ID_MAP[sym];
-      if(id){
-        try {
-          const j = await cgSimple(id);
-          const v = j?.[id]?.usd;
-          if(v!=null) price = Number(v);
-        } catch {}
-      }
-
-      // 2) CMC por símbolo (si hay key)
-      if(price==null){
-        try {
-          const j = await cmcQuoteSymbol(sym);
-          const arr = j?.data?.[sym];
-          const item = Array.isArray(arr) ? arr[0] : null;
-          const v = item?.quote?.USD?.price;
-          if(v!=null) price = Number(v);
-        } catch {}
-      }
-    }
-
-    if(price==null) return null;
-    return _toCache(key, price);
-  } catch {
-    return null;
+// 2) DexScreener: https://api.dexscreener.com/latest/dex/tokens/<mint>
+async function pDEXSCREENER(mint) {
+  if (!isMint(mint)) return null;
+  const url = `https://api.dexscreener.com/latest/dex/tokens/${mint}`;
+  const data = await httpGet(url);
+  const pairs = data?.pairs;
+  if (!Array.isArray(pairs) || pairs.length===0) return null;
+  // Elegir el par con mayor liquidez que tenga priceUsd
+  let best = null;
+  for (const p of pairs) {
+    const pu = parseFloatSafe(p?.priceUsd);
+    const liq = parseFloatSafe(p?.liquidity?.usd);
+    if (!pu) continue;
+    if (!best || (liq||0) > (best.liq||0)) best = { price: pu, liq };
   }
+  return best ? { source: 'DEXSCREENER', price: best.price } : null;
 }
 
-export async function getPriceUsdByMint(mint){ return getPriceUSD(mint); }
-export async function getPriceUsdBySymbol(sym){ return getPriceUSD(sym); }
-export default { getPriceUSD, getPriceUsdByMint, getPriceUsdBySymbol };
+// 3) Birdeye (opcional): https://public-api.birdeye.so/public/price?address=<mint>
+async function pBIRDEYE(mint) {
+  if (!BIRDEYE_API_KEY) return null;
+  if (!isMint(mint)) return null;
+  const url = `https://public-api.birdeye.so/public/price?address=${mint}`;
+  const data = await httpGet(url, { headers: { 'X-API-KEY': BIRDEYE_API_KEY } });
+  const v = parseFloatSafe(data?.data?.value);
+  return v ? { source: 'BIRDEYE', price: v } : null;
+}
+
+// 4) Raydium (limitado): API expone símbolos, no mints arbitrarios.
+//    Usamos Raydium sólo para SOL/USDC (mints conocidos).
+async function pRAYDIUM(mint) {
+  const sym = WELL_KNOWN[mint];
+  if (!sym) return null;
+  // https://api.raydium.io/v2/main/price?ids=SOL,USDC
+  const data = await httpGet('https://api.raydium.io/v2/main/price?ids=SOL,USDC');
+  if (!data) return null;
+  const key = sym.toUpperCase();
+  const v = parseFloatSafe(data?.data?.[key]);
+  return v ? { source: 'RAYDIUM', price: v } : null;
+}
+
+// 5) CoinGecko (sólo SOL ⇢ USD como último fallback)
+async function pCOINGECKO_SOL(mint) {
+  if (mint !== MINT_SOL) return null;
+  const data = await httpGet('https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd',
+    { headers: { accept: 'application/json' }});
+  const v = parseFloatSafe(data?.solana?.usd);
+  return v ? { source: 'COINGECKO_SOL', price: v } : null;
+}
+
+// ====== API pública ======
+
+export async function getSOLPriceUSD() {
+  const r = await getPriceUSD(MINT_SOL);
+  return r?.price ?? null;
+}
+export async function getUSDCPriceUSD() {
+  return 1.0;
+}
+
+export async function getPriceUSD(mint) {
+  // Caché
+  const c = getPriceCache(mint);
+  if (c) return { ...c, cached: true };
+
+  // USDC shortcut estable
+  if (mint === MINT_USDC) {
+    const out = { source: 'STATIC_USDC', price: 1.0, cached: false };
+    setPriceCache(mint, out.price, out.source);
+    return out;
+  }
+
+  // Orden de proveedores
+  for (const prov of ORDER) {
+    let r = null;
+    try {
+      if (prov === 'JUPITER')       r = await pJUPITER(mint);
+      else if (prov === 'DEXSCREENER') r = await pDEXSCREENER(mint);
+      else if (prov === 'BIRDEYE')  r = await pBIRDEYE(mint);
+      else if (prov === 'RAYDIUM')  r = await pRAYDIUM(mint);
+      else if (prov === 'COINGECKO') r = await pCOINGECKO_SOL(mint);
+      // CMC omitido aquí (normalmente requiere mapping adicional o key pro)
+    } catch {
+      r = null;
+    }
+    if (r && Number.isFinite(r.price)) {
+      setPriceCache(mint, r.price, r.source);
+      return { ...r, cached: false };
+    }
+  }
+
+  // No hay precio
+  return null;
+}
+
+export default { getPriceUSD, getSOLPriceUSD, getUSDCPriceUSD };
