@@ -34,3 +34,4 @@ backup-*.tar.gz
 node_modules/
 logs/
 .env
+secrets/

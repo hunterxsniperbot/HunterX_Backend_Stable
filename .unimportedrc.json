@@ -1,0 +1,11 @@
+{
+  "entry": ["bot.js","src/**/*.js","scripts/**/*.js"],
+  "ignorePaths": ["node_modules",".git","logs","tmp","backups",".patch_tmp",".quarantine","secrets"],
+  "ignoreUnimported": ["**/*.bak*","**/*.map","**/*.log"],
+  "ignoreUnresolved": [
+    "@tensorflow/tfjs-node",
+    "@tensorflow/tfjs",
+    "./services/queue.js",
+    "./sniper.js"
+  ]
+}
