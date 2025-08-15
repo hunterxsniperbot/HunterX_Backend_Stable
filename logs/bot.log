@@ -39,3 +39,61 @@ RequestError: Error: Client network socket disconnected before secure TLS connec
 }
 
 Node.js v24.4.1
+⚠️ GOOGLE_SHEETS_ID no está definido. sheets.js funcionará, pero fallará al abrir el doc.
+[Supabase] Faltan SUPABASE_URL / SUPABASE_KEY (los helpers seguirán definidos pero fallarán al llamar).
+⚠️ QUICKNODE_URL no configurado: saldo REAL se mostrará como 0.
+🛰️ [TG] Modo: POLLING
+🔧 Iniciando bot…
+✅ Handler cargado: ajustes.js
+✅ Handler cargado: sniperReset.js
+✅ Handler cargado: autoSniper.js
+✅ Handler cargado: wallet.js (HTML + single edit loop + Phantom)
+✅ Handler cargado: wallet.js
+✅ Handler cargado: registro.js
+✅ Handler cargado: mensaje.js (ayuda avanzada)
+✅ Handler cargado: mensaje.js
+✅ Handler cargado: health.js (live/adaptativo)
+✅ Handler cargado: status.js
+✅ Handler cargado: initSheets.js
+✅ Handler cargado: pick.js
+✅ Handler cargado: mode.js
+✅ Handler cargado: health.js
+🟦 [Slash] comandos seteados
+🤖 HunterX Bot arrancado y escuchando comandos
+🛰️ [TG] Modo: POLLING
+🔧 Iniciando bot…
+✅ Handler cargado: ajustes.js
+✅ Handler cargado: sniperReset.js
+✅ Handler cargado: autoSniper.js
+✅ Handler cargado: wallet.js (HTML + single edit loop + Phantom)
+✅ Handler cargado: wallet.js
+✅ Handler cargado: registro.js
+✅ Handler cargado: mensaje.js (ayuda avanzada)
+✅ Handler cargado: mensaje.js
+✅ Handler cargado: health.js (live/adaptativo)
+✅ Handler cargado: status.js
+✅ Handler cargado: initSheets.js
+✅ Handler cargado: pick.js
+✅ Handler cargado: mode.js
+✅ Handler cargado: health.js
+🟦 [Slash] comandos seteados
+🤖 HunterX Bot arrancado y escuchando comandos
+🛰️ [TG] Modo: POLLING
+🔧 Iniciando bot…
+✅ Handler cargado: ajustes.js
+✅ Handler cargado: sniperReset.js
+✅ Handler cargado: autoSniper.js
+✅ Handler cargado: wallet.js (HTML + single edit loop + Phantom)
+✅ Handler cargado: wallet.js
+✅ Handler cargado: registro.js
+✅ Handler cargado: mensaje.js (ayuda avanzada)
+✅ Handler cargado: mensaje.js
+✅ Handler cargado: health.js (live/adaptativo)
+✅ Handler cargado: status.js
+✅ Handler cargado: initSheets.js
+✅ Handler cargado: pick.js
+✅ Handler cargado: mode.js
+✅ Handler cargado: health.js
+🟦 [Slash] comandos seteados
+🤖 HunterX Bot arrancado y escuchando comandos
+🌐 [polling] aviso: EFATAL: Error: read ETIMEDOUT

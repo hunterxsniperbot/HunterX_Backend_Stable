@@ -1,0 +1,93 @@
+{
+  "metadata": {
+    "name": "hunterx-demo-h1h2",
+    "version": "1.0.0",
+    "created_at": "2025-08-15T12:00:00Z",
+    "environment": "demo",
+    "description": "DEMO 0–5m: filtros fuertes, validadores con deadline, gate por p_win + EV. No compra; simula y loguea.",
+    "model_artifacts_version": "artifacts_latest.json"
+  },
+  "detection": {
+    "entry_window_s": 300,
+    "entry_step_s": 10,
+    "sunset_s": 120,
+    "watch": ["new_pool", "first_lp", "first_trade"]
+  },
+  "filters": {
+    "min_liq_usd": 3000,
+    "max_spread_bps": 120,
+    "max_sell_tax_bps": 500,
+    "require_honeypot_false": true,
+    "min_pool_age_s": 20,
+    "allowed_quotes": ["USDC", "SOL"],
+    "allowed_dexes": ["RAYDIUM", "ORCA"],
+    "price_sources_allowed": ["JUPITER","DEXSCREENER","BIRDEYE","COINGECKO"]
+  },
+  "validators": {
+    "goplus_enabled": true,
+    "tokensniffer_enabled": true,
+    "tokensniffer_min_score": 60,
+    "deadline_ms": 900,
+    "fail_open": false
+  },
+  "pricing": {
+    "order": ["JUPITER","DEXSCREENER","BIRDEYE","COINGECKO","CMC"],
+    "per_provider_timeout_ms": 5000,
+    "global_deadline_ms": 1500,
+    "hedged_delay_ms": 120,
+    "ttl_ms": 15000
+  },
+  "model_decision": {
+    "use_ev_gate": true,
+    "p_win_min": 0.80,
+    "edge_min": 0.005,
+    "costs": { "fee_pct": 0.001, "slippage_pct": 0.001 },
+    "infer": { "mode": "rules", "endpoint_env": "", "timeout_ms": 600 },
+    "primary_label": "y_tp5_sl2_10m",
+    "tp_pct": 0.05,
+    "sl_pct": 0.02,
+    "horizons": [
+      { "label": "y_tp5_sl2_10m", "tp_pct": 0.05, "sl_pct": 0.02, "p_win_min_override": 0.80, "edge_min_override": 0.005 },
+      { "label": "y_tp15_sl5_30m", "tp_pct": 0.15, "sl_pct": 0.05, "p_win_min_override": 0.82, "edge_min_override": 0.006 }
+    ],
+    "features_numeric": [
+      "time_since_listing_s","price_mid","spread_bps","liq_usd","vol_1m","vol_5m","vol_ratio_5m_1m",
+      "ret_5s","ret_10s","ret_30s","ema_slope_30s","zscore_ret_10s",
+      "goplus_buy_tax_bps","goplus_sell_tax_bps","goplus_owner_pct",
+      "sol_ret_15m","sol_ret_60m","sol_vol_15m",
+      "feed_latency_ms","cache_hit","goplus_honeypot","goplus_can_mint","goplus_can_freeze","market_regime"
+    ],
+    "features_categorical": ["price_source"],
+    "threshold_source": "artifacts.json"
+  },
+  "execution": {
+    "mode": "demo",
+    "simulate_orders": true,
+    "slippage_bps_limit": 80,
+    "impact_bps_max": 80,
+    "max_size_of_depth1k_pct": 0.20,
+    "risk_per_trade_pct": 0.50,
+    "daily_risk_cap_R": 3,
+    "weekly_drawdown_R": 6,
+    "max_concurrent_pos": 2,
+    "stop": { "mode": "percent", "sl_pct": 0.02, "time_stop_s": 90, "move_to_be_at_pct": 0.08 },
+    "take_profits": { "levels_pct": [0.12,0.30], "sizes_pct": [0.60,0.30], "runner_pct": 0.10 },
+    "trailing": { "mode": "percent", "trail_pct": 0.15, "atr_mult": 3.5 }
+  },
+  "alerts": {
+    "discord_enabled": true,
+    "webhook_url_env": "DISCORD_WEBHOOK_URL",
+    "include_fields": ["token","time_since_listing_s","liq_usd","spread_bps","p_win","EV","risk_flags","links"]
+  },
+  "logging": { "level": "info", "audit_trades": true, "snapshot_dump": true, "path": "logs/bot.log" },
+  "persistence": { "supabase": { "table_snapshots": "snapshots", "table_trades": "trades", "table_events": "events" } },
+  "safety": {
+    "dry_run": true,
+    "enable_kill_switch": true,
+    "kill_conditions": [
+      {"metric":"rolling_ev_7d","op":"<","value":0.0},
+      {"metric":"precision_7d","op":"<","value":0.70},
+      {"metric":"consecutive_losses","op":">=","value":4}
+    ]
+  }
+}
