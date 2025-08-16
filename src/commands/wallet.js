@@ -1,173 +1,277 @@
-// src/commands/wallet.js — Posiciones abiertas (HTML) + single-message refresh + Phantom
-import { getOpenPositions } from '../services/positions.js';
-import { getSolBalanceUSD } from '../services/phantom.js';
+// src/commands/wallet.js — vista única + ventas parciales (DEMO) con anti-deadlock
+import crypto from 'node:crypto';
+import { loadState, saveState } from '../services/state_compat.js';
+import { getPriceUSD } from '../services/prices.js';
 
-const BASE_DEMO = Number(process.env.BASE_DEMO || 1000);
+const SLOTS = new Map(); // chatId -> { msgId, auto, timer, lastHash, selectedId, busy, busyAt }
 
-function esc(s){
-  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+const EMO = {
+  header: '📱',
+  real:   '💳',
+  demo:   '🧪',
+  token:  '🪙',
+  entry:  '📥',
+  price:  '📤',
+  invest: '💵',
+  pnl:    '📈',
+  linkDs: '📊',
+  linkSc: '📎',
+  linkJp: '🌀',
+  linkRd: '🌊',
+  selOn:  '✅',
+  selOff: '🎯',
+  refresh:'🔄',
+  autoOn: '🟢',
+  autoOff:'⚪',
+  sell:   '💯'
+};
+
+function fmtUsd(n){ return Number(n||0).toLocaleString('en-US',{style:'currency',currency:'USD',maximumFractionDigits:2}); }
+function safeSymbol(s){ return String(s||'TOKEN').slice(0,12).toUpperCase(); }
+function round2(x){ return Math.round(Number(x||0)*100)/100; }
+
+function pnlFor(pos, priceNow) {
+  const entry = Number(pos.entryPriceUsd||0);
+  const inv   = Number(pos.investedUsd||0);
+  if (entry<=0 || inv<=0 || priceNow<=0) return { pct:'0.0%', usd:fmtUsd(0) };
+  const pct = (priceNow/entry - 1) * 100;
+  const usd = (pct/100) * inv;
+  return { pct:`${pct.toFixed(1)}%`, usd:fmtUsd(usd) };
 }
-function fmtUsd(n){ return (Number(n)||0).toLocaleString('en-US',{ style:'currency', currency:'USD' }); }
-function fmtPct(n){ return (Number(n)||0).toFixed(2) + '%'; }
 
-function renderPosition(p){
-  const name = esc(p.symbol || (p.mint?.slice(0,6)+'...') || 'Token');
-  const entry = '📥 Precio de entrada: ' + fmtUsd(p.avgIn);
-  const now   = '📤 Precio actual: '   + fmtUsd(p.priceNow);
-  const inv   = '💵 Invertido: '       + fmtUsd(p.investedUsd);
-  const pnl   = (p.pnlPct >= 0)
-    ? `📈 PnL: +${fmtPct(p.pnlPct)} (${fmtUsd(p.pnlUsd)})`
-    : `📉 PnL: ${fmtPct(p.pnlPct)} (${fmtUsd(p.pnlUsd)})`;
+function dsLink(mint){ return `https://dexscreener.com/solana/${mint}`; }
+function scLink(mint){ return `https://solscan.io/token/${mint}`; }
+function jpLink(mint){ return `https://jup.ag/swap/SOL-${mint}`; }
+function rdLink(mint){ return `https://raydium.io/swap/?inputCurrency=sol&outputCurrency=${mint}`; }
 
-  let links = '';
-  if (p.mint){
-    const mint = esc(p.mint);
-    const ds = `https://dexscreener.com/solana/${mint}`;
-    const sc = `https://solscan.io/token/${mint}`;
-    links = `\n<a href="${ds}">📊 DexScreener</a>  <a href="${sc}">📎 Solscan</a>`;
+async function fetchPrices(mints){
+  const out=new Map();
+  await Promise.all(mints.map(async m=>{
+    try{ const r=await getPriceUSD(m); out.set(m, Number(r?.price||r||0)); }
+    catch{ out.set(m,0); }
+  }));
+  return out;
+}
+
+function buildKeyboard(positions, slot){
+  const kb=[];
+  positions.slice(0,10).forEach(p=>{
+    const sel=(p.id===slot.selectedId);
+    kb.push([{text:`${sel?EMO.selOn:EMO.selOff} ${safeSymbol(p.symbol)}${p.mode==='demo'?'·D':''}`,callback_data:`w:sel:${p.id}`}]);
+  });
+  kb.push([
+    {text:'25%',callback_data:'w:sell:25'},
+    {text:'50%',callback_data:'w:sell:50'},
+    {text:'75%',callback_data:'w:sell:75'},
+    {text:`${EMO.sell} Vender`,callback_data:'w:sell:100'},
+  ]);
+  kb.push([
+    {text:`${EMO.refresh} Refrescar`,callback_data:'w:refresh'},
+    {text:`${slot.auto?EMO.autoOn:EMO.autoOff} Auto: ${slot.auto?'ON':'OFF'}`,callback_data:'w:auto'}
+  ]);
+  return { inline_keyboard: kb };
+}
+
+function hashPayload(text,kb,selectedId,auto){
+  const h=crypto.createHash('sha1');
+  h.update(text||''); h.update(JSON.stringify(kb||{})); h.update(String(selectedId||'')); h.update(String(auto));
+  return h.digest('hex');
+}
+
+async function render(bot, chatId, deps, force=false){
+  const slot = SLOTS.get(chatId) || { auto:true };
+  SLOTS.set(chatId, slot);
+
+  // breaker de deadlock: si quedó busy >8s, liberamos
+  if (slot.busy) {
+    if (!slot.busyAt || (Date.now()-slot.busyAt)>8000) {
+      slot.busy=false;
+    } else {
+      return; // todavía está dentro de ventana, salimos suave
+    }
   }
 
-  return [
-    '',
-    `🪙 <b>$${name}</b>`,
-    entry,
-    now,
-    inv,
-    pnl + links
-  ].join('\n');
-}
+  slot.busy=true;
+  slot.busyAt=Date.now();
+  try {
+    const st = loadState();
+    st.positions = st.positions || {};
+    const demoArr = Array.isArray(st.positions.demo) ? st.positions.demo.filter(p=>p.isOpen!==false) : [];
+    const realArr = Array.isArray(st.positions.real) ? st.positions.real.filter(p=>p.isOpen!==false) : [];
 
-function buildHTML({ demo, real, totals }, { realUsd }){
-  const header = '<b>📱 Posiciones abiertas</b>';
-  const counts = [
-    '',
-    `- DEMO: ${totals.demoCount}`,
-    `- REAL: ${totals.realCount}`,
-    `- Total: ${totals.totalCount}`,
-    ''
-  ].join('\n');
+    // ordenar por fecha (más nuevas primero)
+    demoArr.sort((a,b)=>Number(b.openedAt||0)-Number(a.openedAt||0));
+    realArr.sort((a,b)=>Number(b.openedAt||0)-Number(a.openedAt||0));
 
-  // Balances
-  const demoInvested = totals.demoInvested;
-  const realInvested = totals.realInvested;
-
-  const demoFree = Math.max(0, BASE_DEMO - demoInvested);
-  const realFree = Math.max(0, (Number(realUsd)||0) - realInvested);
-
-  const walletReal = [
-    '💳 <b>Billetera Phantom (REAL)</b>',
-    '- Address: ' + esc(process.env.PHANTOM_ADDRESS || '—'),
-    '- Invertido: ' + fmtUsd(realInvested),
-    '- Libre para sniper: ' + fmtUsd(realFree),
-    '- Total disponible: ' + fmtUsd((Number(realUsd)||0)),
-    ''
-  ].join('\n');
-
-  const walletDemo = [
-    '🧪 <b>Billetera DEMO</b>',
-    '- Invertido: ' + fmtUsd(demoInvested),
-    '- Libre para sniper: ' + fmtUsd(demoFree),
-    '- Total disponible: ' + fmtUsd(demoFree + demoInvested),
-    ''
-  ].join('\n');
-
-  const combined = [...real, ...demo]
-    .sort((a,b)=>Math.abs(b.pnlUsd) - Math.abs(a.pnlUsd))
-    .slice(0, 10)
-    .map(renderPosition)
-    .join('\n');
-
-  return [
-    header,
-    counts,
-    walletReal,
-    walletDemo,
-    combined || '—'
-  ].join('\n');
-}
-
-export default function registerWallet(bot){
-  // Por usuario guardamos: { interval, chatId, messageId, running, baseMs }
-  bot._walletLoop = bot._walletLoop || {};
-
-  bot.onText(/^\s*\/wallet(?:\s+(\S+))?\s*$/i, async (msg, m) => {
-    const chatId = msg.chat.id;
-    const uid    = String(msg.from.id);
-    const arg    = (m && m[1]) ? String(m[1]).toLowerCase() : '';
-
-    // STOP
-    if (arg === 'stop'){
-      const loop = bot._walletLoop[uid];
-      if (loop?.interval) clearInterval(loop.interval);
-      delete bot._walletLoop[uid];
-      return bot.sendMessage(chatId, '<b>⏹️ Wallet: loop detenido</b>', { parse_mode:'HTML' });
+    // init cash demo si falta
+    st.demo = st.demo || {};
+    if (typeof st.demo.cash !== 'number') {
+      const sumInv = demoArr.reduce((a,p)=>a+Number(p.investedUsd||0),0);
+      st.demo.cash = Math.max(0, 10_000 - sumInv);
+      saveState(st);
     }
 
-    // ONCE
-    const isOnce = (arg === 'once');
+    const positions = [...demoArr, ...realArr].slice(0,10);
+    if (!slot.selectedId && positions[0]) slot.selectedId = positions[0].id;
 
-    // base segundos
-    let baseSec = 10;
-    if (!isOnce && /^\d+(\.\d+)?$/.test(arg)) baseSec = Math.max(3, Number(arg));
-    const baseMs = baseSec * 1000;
+    const priceMap = await fetchPrices(positions.map(p=>p.mint));
 
-    // función de render (edita mensaje si existe)
-    const renderOnce = async () => {
-      const loop = bot._walletLoop[uid] || {};
-      if (loop.running) return; // anti-reentrancia
-      loop.running = true;
-      bot._walletLoop[uid] = loop;
+    const demoInvested = demoArr.reduce((a,p)=>a+Number(p.investedUsd||0),0);
+    const head = [
+      `**${EMO.header} Posiciones abiertas**`,
+      `• DEMO: ${demoArr.length}`,
+      `• REAL: ${realArr.length}`,
+      `• Total: ${positions.length}`,
+      ``,
+      `**${EMO.real} Billetera Phantom (REAL)**`,
+      `• Address: —`,
+      `• Invertido: —`,
+      `• Libre para sniper: —`,
+      `• Total disponible: —`,
+      ``,
+      `**${EMO.demo} Billetera DEMO**`,
+      `• Invertido: ${fmtUsd(demoInvested)}`,
+      `• Libre para sniper: ${fmtUsd(st.demo.cash)}`,
+      `• Total disponible: ${fmtUsd(st.demo.cash + demoInvested)}`,
+      ``,
+      `*Modo activo: ${(realArr.length>0)?'REAL':'DEMO'}*`,
+    ].join('\n');
+
+    const blocks = positions.map((p)=>{
+      const symbol=safeSymbol(p.symbol);
+      const priceNow=Number(priceMap.get(p.mint)||0);
+      const pnl=pnlFor(p,priceNow);
+      const selMark=(p.id===slot.selectedId)?'▶ ':'';
+      return [
+        `${selMark}${EMO.token} **$${symbol}** *(${p.mode?.toUpperCase()||'DEMO'})*`,
+        `${EMO.entry} Entrada: ${Number(p.entryPriceUsd||0)}`,
+        `${EMO.price} Actual: ${priceNow || '—'}`,
+        `${EMO.invest} Invertido: ${fmtUsd(p.investedUsd||0)}`,
+        `${EMO.pnl} PnL: ${pnl.pct} (${pnl.usd})`,
+        `${EMO.linkDs} [DexScreener](${dsLink(p.mint)})  |  ${EMO.linkSc} [Solscan](${scLink(p.mint)})  |  ${EMO.linkJp} [Jupiter](${jpLink(p.mint)})  |  ${EMO.linkRd} [Raydium](${rdLink(p.mint)})`
+      ].join('\n');
+    });
+
+    const text = [head, ...blocks].join('\n\n');
+    const reply_markup = buildKeyboard(positions, slot);
+    const h = hashPayload(text, reply_markup, slot.selectedId, slot.auto);
+
+    if (force || h!==slot.lastHash){
       try{
-        const data = await getOpenPositions();
-        const realUsd = await getSolBalanceUSD(process.env.PHANTOM_ADDRESS || '');
-        const html = buildHTML(data, { realUsd });
-
-        if (!loop.messageId){
-          // primera vez: enviar
-          const sent = await bot.sendMessage(chatId, html, { parse_mode:'HTML', disable_web_page_preview:true });
-          loop.chatId = chatId;
-          loop.messageId = sent.message_id;
-        }else{
-          // refrescar: editar
-          try{
-            await bot.editMessageText(html, {
-              chat_id: loop.chatId,
-              message_id: loop.messageId,
-              parse_mode:'HTML',
-              disable_web_page_preview:true
-            });
-          }catch(e){
-            // si el texto no cambió, Telegram tira 400 "message is not modified"
-            // lo ignoramos para no romper el loop
-            // cualquier otro error lo logueamos
-            const msg = (e && e.message) || String(e||'');
-            if (!/message is not modified/i.test(msg)) {
-              console.warn('[wallet.edit]', msg);
-            }
-          }
+        if (slot.msgId) {
+          await bot.editMessageText(text,{
+            chat_id: chatId, message_id: slot.msgId,
+            parse_mode:'Markdown', disable_web_page_preview:true, reply_markup
+          });
+        } else {
+          const sent=await bot.sendMessage(chatId,text,{parse_mode:'Markdown',disable_web_page_preview:true,reply_markup});
+          slot.msgId=sent.message_id;
         }
-      }finally{
-        const L = bot._walletLoop[uid] || {};
-        L.running = false;
-        bot._walletLoop[uid] = L;
+        slot.lastHash=h;
+      } catch {
+        try {
+          const sent=await bot.sendMessage(chatId,text,{parse_mode:'Markdown',disable_web_page_preview:true,reply_markup});
+          slot.msgId=sent.message_id; slot.lastHash=h;
+        } catch(e2){ console.error('[wallet/send]', e2?.message||e2); }
       }
-    };
-
-    if (isOnce){
-      // una sola “foto”
-      return renderOnce();
     }
+  } catch(e) {
+    console.error('[wallet/render]', e?.stack||e);
+  } finally {
+    slot.busy=false;
+  }
+}
 
-    // loop: limpiar previo si existía
-    const prev = bot._walletLoop[uid];
-    if (prev?.interval) clearInterval(prev.interval);
-    bot._walletLoop[uid] = { ...prev, chatId, messageId: prev?.messageId, running:false, baseMs };
+function startAuto(chatId, bot, deps){
+  const slot=SLOTS.get(chatId)||{};
+  if (slot.timer) clearInterval(slot.timer);
+  slot.auto=true;
+  slot.timer=setInterval(()=>render(bot,chatId,deps),5000);
+  SLOTS.set(chatId,slot);
+}
+function stopAuto(chatId){
+  const slot=SLOTS.get(chatId); if(!slot) return;
+  slot.auto=false;
+  if (slot.timer){ clearInterval(slot.timer); slot.timer=null; }
+  SLOTS.set(chatId,slot);
+}
 
-    // disparo inmediato + intervalo
-    await renderOnce();
-    const loopRef = setInterval(renderOnce, baseMs);
-    bot._walletLoop[uid].interval = loopRef;
+export default function registerWallet(bot, deps={}){
+  bot.onText(/^\/wallet(?:@.+)?$/i, async (msg)=>{
+    const chatId=msg.chat.id;
+    stopAuto(chatId);
+    await render(bot,chatId,deps,true); // force
+    startAuto(chatId,bot,deps);
   });
 
-  console.log('✅ Handler cargado: wallet.js (HTML + single edit loop + Phantom)');
+  bot.on('callback_query', async (q)=>{
+    try{
+      const chatId=q.message?.chat?.id; if(!chatId) return;
+      const data=String(q.data||''); if(!/^w:/.test(data)) return;
+      const slot=SLOTS.get(chatId)||{auto:true}; SLOTS.set(chatId,slot);
+
+      if (data.startsWith('w:refresh')){
+        slot.lastHash=''; slot.busy=false; // fuerza repaint
+        await bot.answerCallbackQuery(q.id,{text:'Actualizando…'});
+        await render(bot,chatId,deps,true);
+        return;
+      }
+      if (data.startsWith('w:auto')){
+        if (slot.auto) { stopAuto(chatId); } else { startAuto(chatId,bot,deps); }
+        await bot.answerCallbackQuery(q.id,{text:`Auto: ${SLOTS.get(chatId).auto?'ON':'OFF'}`});
+        await render(bot,chatId,deps,true);
+        return;
+      }
+      if (data.startsWith('w:sel:')){
+        slot.selectedId=data.split(':')[2];
+        await bot.answerCallbackQuery(q.id,{text:`Seleccionado: ${slot.selectedId}`});
+        await render(bot,chatId,deps,true);
+        return;
+      }
+      if (data.startsWith('w:sell:')){
+        const pct=Number(data.split(':')[2]||0);
+        if (!slot.selectedId){ await bot.answerCallbackQuery(q.id,{text:'Elegí una posición (🎯)'}); return; }
+
+        const st=loadState(); st.positions=st.positions||{}; st.demo=st.demo||{};
+        const all=[...(Array.isArray(st.positions.demo)?st.positions.demo:[]), ...(Array.isArray(st.positions.real)?st.positions.real:[])];
+        const pos=all.find(p=>p.id===slot.selectedId);
+        if (!pos){ await bot.answerCallbackQuery(q.id,{text:'La posición ya no existe.'}); await render(bot,chatId,deps,true); return; }
+
+        if ((pos.mode||'demo')==='demo'){
+          const original=Number(pos.originalUsd ?? pos.investedUsd ?? 0);
+          pos.originalUsd=original;
+          let sellUsd=round2(original*(pct/100));
+          sellUsd=Math.min(sellUsd, Number(pos.investedUsd||0));
+          pos.investedUsd=round2(Number(pos.investedUsd||0)-sellUsd);
+          if (typeof st.demo.cash!=='number') st.demo.cash=0;
+          st.demo.cash=round2(st.demo.cash+sellUsd);
+          if (pos.investedUsd<=0.01){ pos.investedUsd=0; pos.isOpen=false; pos.status='closed'; }
+          if (pos.mode==='demo'){
+            const i=st.positions.demo.findIndex(x=>x.id===pos.id); if(i>=0) st.positions.demo[i]=pos;
+          } else {
+            const i=st.positions.real.findIndex(x=>x.id===pos.id); if(i>=0) st.positions.real[i]=pos;
+          }
+          saveState(st);
+          await bot.answerCallbackQuery(q.id,{text:`Vendido ${pct}% (DEMO) · Cash: ${fmtUsd(st.demo.cash)}`});
+          await render(bot,chatId,deps,true);
+          return;
+        }
+
+        try{
+          if (deps.trading?.sellPercent){
+            await deps.trading.sellPercent({ positionId: slot.selectedId, pct });
+            await bot.answerCallbackQuery(q.id,{text:`Orden enviada: ${pct}% (REAL)`});
+          } else {
+            await bot.answerCallbackQuery(q.id,{text:'REAL: integrar sellPercent()'});
+          }
+        } catch(e){
+          await bot.answerCallbackQuery(q.id,{text:`Error real: ${e?.message||e}`});
+        }
+        await render(bot,chatId,deps,true);
+      }
+    }catch(e){
+      try{ await bot.answerCallbackQuery(q.id,{text:'Error'}); }catch{}
+      console.error('[wallet/callback]', e?.stack||e);
+    }
+  });
 }

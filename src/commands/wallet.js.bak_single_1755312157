@@ -1,0 +1,294 @@
+// src/commands/wallet.js — multi-mensaje (summary + 1 por posición)
+import * as fs from 'fs';
+import * as path from 'path';
+import * as prices from '../services/prices.js';
+import * as trading from '../services/trading.js';  // gancho REAL (si lo implementás)
+import { loadPolicySync } from '../policy.js';
+
+const REFRESH_MS = Number(process.env.WALLET_REFRESH_MS || '5000'); // 5s
+// SLOTS: chatId -> { auto, summaryId, posIds: Map<posId,messageId>, lastAt }
+const SLOTS = new Map();
+
+/* ---------------- utils ---------------- */
+function loadState() {
+  try {
+    const p = path.join(process.cwd(), 'data', 'state.json');
+    return JSON.parse(fs.readFileSync(p, 'utf8'));
+  } catch { return {}; }
+}
+function saveState(st) {
+  const p = path.join(process.cwd(), 'data', 'state.json');
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, JSON.stringify(st, null, 2));
+}
+function esc(s=''){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function fmtUsd(n){ if(n==null||Number.isNaN(n))return '—';
+  return new Intl.NumberFormat('en-US',{style:'currency',currency:'USD',maximumFractionDigits:2}).format(Number(n));
+}
+function short(s,n=6){ if(!s)return '—'; return s.length>2*n ? s.slice(0,n)+'…'+s.slice(-n) : s; }
+function linkDex(mint){ return `https://dexscreener.com/solana/${mint}`; }
+function linkSolscan(mint){ return `https://solscan.io/token/${mint}`; }
+function activeMode(){ return (loadPolicySync()?.execution?.mode)||'demo'; }
+function pickOpen(arr){ return (Array.isArray(arr)?arr:[]).filter(p=>p?.isOpen!==false && p?.status!=='closed'); }
+function calcPnl(pos, lastPriceUsd){
+  if(!pos?.entryPriceUsd || !lastPriceUsd || !pos?.investedUsd) return {pct:'—', usd:'—'};
+  const tokensHeld = Number(pos.investedUsd)/Number(pos.entryPriceUsd);
+  const mktUsd     = tokensHeld*Number(lastPriceUsd);
+  const pnlUsd     = mktUsd-Number(pos.investedUsd);
+  const pct        = (Number(pos.investedUsd)>0)? (pnlUsd/Number(pos.investedUsd))*100 : 0;
+  return { pct: `${pct.toFixed(1)}%`, usd: fmtUsd(pnlUsd) };
+}
+async function enrichWithPrice(items){
+  const out=[]; for(const pos of items){
+    let lastPriceUsd=null;
+    try{ const p=await prices.getPriceUSD(pos.mint); lastPriceUsd=Number(p?.price||0)||null; }catch{}
+    out.push({...pos,lastPriceUsd});
+  } return out;
+}
+
+/* -------------- DEMO sells -------------- */
+function demoSellPercent(state, posId, pct, lastPriceUsd) {
+  const pools=[state.positions?.demo||[], state.positions?.real||[]];
+  let pos, arr, idx=-1;
+  for(const a of pools){ const k=a.findIndex(x=>x?.id===posId); if(k>=0){pos=a[k];arr=a;idx=k;break;} }
+  if(!pos) throw new Error('Posición no encontrada');
+
+  pct=Math.min(100,Math.max(1,Number(pct||0)));
+  const fraction=pct/100;
+  const entry=Number(pos.entryPriceUsd||0), inv=Number(pos.investedUsd||0);
+  if(entry<=0||inv<=0) throw new Error('Entrada/invertido inválido');
+
+  const tokensHeld=inv/entry;
+  const tokensToSell=tokensHeld*fraction;
+  const proceedsUsd=tokensToSell*Number(lastPriceUsd||entry);
+  const costUsd=inv*fraction;
+  const realizedPnl=proceedsUsd-costUsd;
+
+  pos.realizedUsd = Number(pos.realizedUsd||0)+proceedsUsd;
+  pos.realizedPnlUsd = Number(pos.realizedPnlUsd||0)+realizedPnl;
+  pos.realizedAt = Date.now();
+  pos.fills = Array.isArray(pos.fills)?pos.fills:[];
+  pos.fills.push({type:'sell',pct,proceedsUsd,realizedPnl,at:pos.realizedAt,priceUsd:lastPriceUsd});
+
+  pos.investedUsd = inv - costUsd;
+  if(pos.investedUsd<=0.000001){ pos.investedUsd=0; pos.isOpen=false; pos.status='closed'; pos.closedAt=Date.now(); }
+  saveState(state);
+  return { proceedsUsd, realizedPnl };
+}
+
+/* --------- renders (summary / position) --------- */
+function renderSummaryText(st, mode){
+  const demoOpen=pickOpen(st.positions?.demo).length;
+  const realOpen=pickOpen(st.positions?.real).length;
+  const lines=[];
+  lines.push('<b>📱 Posiciones abiertas</b>');
+  lines.push('');
+  lines.push(`• DEMO: ${demoOpen}`);
+  lines.push(`• REAL: ${realOpen}`);
+  lines.push(`• Total: ${demoOpen+realOpen}`);
+  lines.push('');
+  lines.push('<b>💳 Billetera Phantom (REAL)</b>');
+  lines.push(`• Address: <code>${esc(short(process.env.PHANTOM_ADDRESS||''))}</code>`);
+  lines.push(`• Invertido: —`);
+  lines.push(`• Libre para sniper: —`);
+  lines.push(`• Total disponible: —`);
+  lines.push('');
+  lines.push('<b>🧪 Billetera DEMO</b>');
+  lines.push(`• Invertido: —`);
+  lines.push(`• Libre para sniper: ${fmtUsd(Number(process.env.DEMO_CASH_USD||'1000'))}`);
+  lines.push(`• Total disponible: —`);
+  lines.push('');
+  lines.push(`<i>Modo activo: ${mode.toUpperCase()}</i>`);
+  return lines.join('\n');
+}
+function renderSummaryKeyboard(auto){
+  return { inline_keyboard: [
+    [{ text:'🔄 Refrescar', callback_data:'wallet:refresh' },
+     { text: auto? '🟢 Auto: ON':'⚫ Auto: OFF', callback_data:'wallet:toggle' }]
+  ]};
+}
+function renderPosText(pos, mode){
+  const pnl=calcPnl(pos,pos.lastPriceUsd);
+  return [
+    `🪙 <b>$${esc(pos.symbol||'TOKEN')}</b> <i>(${mode.toUpperCase()})</i>`,
+    `📥 Entrada: ${pos.entryPriceUsd ?? '—'}`,
+    `📤 Actual: ${pos.lastPriceUsd ?? '—'}`,
+    `💵 Invertido: ${fmtUsd(pos.investedUsd)}`,
+    `📈 PnL: ${esc(pnl.pct)} (${esc(pnl.usd)})`,
+    `<a href="${esc(linkDex(pos.mint))}">📊 DexScreener</a>  |  <a href="${esc(linkSolscan(pos.mint))}">📎 Solscan</a>`
+  ].join('\n');
+}
+function renderPosKeyboard(pos){
+  return { inline_keyboard: [[
+    { text:'🔁 25%', callback_data:`wallet:sell:${pos.id}:25` },
+    { text:'🔁 50%', callback_data:`wallet:sell:${pos.id}:50` },
+    { text:'🔁 75%', callback_data:`wallet:sell:${pos.id}:75` },
+    { text:'💯 Vender', callback_data:`wallet:sell:${pos.id}:100` },
+  ]]};
+}
+
+/* --------- loop y upserts --------- */
+async function refreshForChat(bot, chatId){
+  const slot = SLOTS.get(String(chatId)) || { auto:true, summaryId:null, posIds:new Map() };
+  SLOTS.set(String(chatId), slot);
+
+  const mode = activeMode();
+  const st = loadState();
+
+  // Summary (crear/editar)
+  const summaryText = renderSummaryText(st, mode);
+  const summaryKb   = renderSummaryKeyboard(slot.auto);
+  if (slot.summaryId) {
+    try {
+      await bot.editMessageText(summaryText, {
+        chat_id: chatId, message_id: slot.summaryId,
+        parse_mode:'HTML', disable_web_page_preview:true, reply_markup: summaryKb
+      });
+    } catch (e) {
+      // si no existe, lo enviamos de nuevo
+      const sent = await bot.sendMessage(chatId, summaryText, {
+        parse_mode:'HTML', disable_web_page_preview:true, reply_markup: summaryKb
+      });
+      slot.summaryId = sent.message_id;
+    }
+  } else {
+    const sent = await bot.sendMessage(chatId, summaryText, {
+      parse_mode:'HTML', disable_web_page_preview:true, reply_markup: summaryKb
+    });
+    slot.summaryId = sent.message_id;
+  }
+
+  // Posiciones del modo activo (máx 10)
+  const listRaw = mode==='real' ? pickOpen(st.positions?.real) : pickOpen(st.positions?.demo);
+  const list = (listRaw||[]).slice(0,10);
+  const enriched = await enrichWithPrice(list);
+
+  // Mantener un set de IDs actuales
+  const nowIds = new Set(enriched.map(p=>p.id));
+
+  // Upsert de cada posición (envía mensaje si no existe, o edita si existe)
+  for (const pos of enriched) {
+    const msgId = slot.posIds?.get(pos.id);
+    const text = renderPosText(pos, mode);
+    const kb   = renderPosKeyboard(pos);
+    if (msgId) {
+      try {
+        await bot.editMessageText(text, {
+          chat_id:chatId, message_id:msgId,
+          parse_mode:'HTML', disable_web_page_preview:true, reply_markup:kb
+        });
+      } catch {
+        const sent = await bot.sendMessage(chatId, text, {
+          parse_mode:'HTML', disable_web_page_preview:true, reply_markup:kb
+        });
+        slot.posIds.set(pos.id, sent.message_id);
+      }
+    } else {
+      const sent = await bot.sendMessage(chatId, text, {
+        parse_mode:'HTML', disable_web_page_preview:true, reply_markup:kb
+      });
+      if (!slot.posIds) slot.posIds = new Map();
+      slot.posIds.set(pos.id, sent.message_id);
+    }
+  }
+
+  // Limpiar mensajes de posiciones que ya no existen / cerradas
+  if (slot.posIds && slot.posIds.size) {
+    for (const [pid, mid] of Array.from(slot.posIds.entries())) {
+      if (!nowIds.has(pid)) {
+        try { await bot.deleteMessage(chatId, String(mid)); } catch {}
+        slot.posIds.delete(pid);
+      }
+    }
+  }
+
+  slot.lastAt = Date.now();
+  SLOTS.set(String(chatId), slot);
+}
+
+let LOOP=null;
+function ensureLoop(bot){
+  if (LOOP) return;
+  LOOP = setInterval(async ()=>{
+    for (const [cid, slot] of SLOTS) {
+      try {
+        if (!slot.auto) continue;
+        if (Date.now() - (slot.lastAt||0) < REFRESH_MS - 100) continue;
+        await refreshForChat(bot, cid);
+      } catch {}
+    }
+  }, REFRESH_MS);
+}
+
+/* -------------- registro de comandos -------------- */
+export default function registerWallet(bot){
+  // /wallet → crea/edita summary + crea/edita mensajes por posición
+  bot.onText(/^\/wallet$/, async (msg)=>{
+    const chatId = msg.chat.id;
+    const slot = SLOTS.get(String(chatId)) || { auto:true, summaryId:null, posIds:new Map() };
+    SLOTS.set(String(chatId), slot);
+    await refreshForChat(bot, chatId);
+    ensureLoop(bot);
+  });
+
+  // callbacks (toggle/refresh/sell)
+  bot.on('callback_query', async (q)=>{
+    try {
+      const data = String(q.data||'');
+      const chatId = q.message?.chat?.id;
+      if (!chatId) return;
+
+      const slot = SLOTS.get(String(chatId)) || { auto:true, summaryId:null, posIds:new Map() };
+      SLOTS.set(String(chatId), slot);
+
+      if (data === 'wallet:toggle') {
+        slot.auto = !slot.auto;
+        await refreshForChat(bot, chatId);
+        try { await bot.answerCallbackQuery(q.id, { text:`Auto: ${slot.auto?'ON':'OFF'}` }); } catch {}
+        return;
+      }
+      if (data === 'wallet:refresh') {
+        await refreshForChat(bot, chatId);
+        try { await bot.answerCallbackQuery(q.id); } catch {}
+        return;
+      }
+
+      // wallet:sell:<id>:<pct>
+      const m = data.match(/^wallet:sell:([^:]+):([0-9]+)$/);
+      if (m) {
+        const posId = m[1];
+        const pct   = Number(m[2]);
+        const st = loadState();
+
+        // Buscar la posición en DEMO/REAL
+        const poolDemo = st.positions?.demo || [];
+        const poolReal = st.positions?.real || [];
+        let pos = poolDemo.find(x=>x.id===posId);
+        let arrName = 'demo';
+        if (!pos) { pos = poolReal.find(x=>x.id===posId); arrName = 'real'; }
+        if (!pos) throw new Error('Posición no encontrada');
+
+        // Precio actual
+        let last = pos.lastPriceUsd;
+        if (!last) { try { const r=await prices.getPriceUSD(pos.mint); last=Number(r?.price||0)||null; } catch{} }
+        if (!last) throw new Error('No pude obtener precio');
+
+        if (arrName==='demo') {
+          demoSellPercent(st, posId, pct, last);
+          try { await bot.answerCallbackQuery(q.id, { text:`DEMO ${pct}% ✅` }); } catch {}
+        } else {
+          if (typeof trading.sellPercent==='function') {
+            await trading.sellPercent({ id: posId, mint: pos.mint, symbol: pos.symbol }, pct, { priceUsd: last });
+            try { await bot.answerCallbackQuery(q.id, { text:`REAL ${pct}% enviado ✅` }); } catch {}
+          } else {
+            try { await bot.answerCallbackQuery(q.id, { text:`REAL aún no implementado aquí` }); } catch {}
+          }
+        }
+        await refreshForChat(bot, chatId);
+        return;
+      }
+    } catch (e) {
+      try { await bot.answerCallbackQuery(q.id, { text: '⚠️ '+(e?.message||'Error') }); } catch {}
+    }
+  });
+}

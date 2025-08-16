@@ -1,8 +1,261 @@
 {
   "sniperOn": {
-    "7996740495": true
+    "7996740495": false
   },
   "realMode": {
     "7996740495": false
+  },
+  "positions": {
+    "demo": [
+      {
+        "id": "demo-1755308781519",
+        "mint": "So11111111111111111111111111111111111111112",
+        "symbol": "SOLBOMB",
+        "entryPriceUsd": 0.0032,
+        "investedUsd": 0,
+        "openedAt": 1755308781519,
+        "mode": "demo",
+        "realizedUsd": 58639257.8125,
+        "realizedPnlUsd": 58638257.8125,
+        "realizedAt": 1755312457503,
+        "fills": [
+          {
+            "type": "sell",
+            "pct": 75,
+            "proceedsUsd": 43978125,
+            "realizedPnl": 43977375,
+            "at": 1755312444054,
+            "priceUsd": 187.64
+          },
+          {
+            "type": "sell",
+            "pct": 25,
+            "proceedsUsd": 3664843.7499999995,
+            "realizedPnl": 3664781.2499999995,
+            "at": 1755312446331,
+            "priceUsd": 187.64
+          },
+          {
+            "type": "sell",
+            "pct": 100,
+            "proceedsUsd": 10996289.0625,
+            "realizedPnl": 10996101.5625,
+            "at": 1755312457503,
+            "priceUsd": 187.67
+          }
+        ],
+        "isOpen": false,
+        "status": "closed",
+        "closedAt": 1755312457503
+      },
+      {
+        "id": "demo-1755309073168",
+        "mint": "So11111111111111111111111111111111111111112",
+        "symbol": "SOLBOMB",
+        "entryPriceUsd": 0.0032,
+        "investedUsd": 0,
+        "openedAt": 1755309073168,
+        "mode": "demo",
+        "ownerId": 7996740495,
+        "chatId": 7996740495,
+        "base": "SOL",
+        "quote": "USDC",
+        "isOpen": false,
+        "status": "closed"
+      },
+      {
+        "id": "demo-1755309588583",
+        "mint": "So11111111111111111111111111111111111111112",
+        "symbol": "SOLBOMB",
+        "entryPriceUsd": 0.0032,
+        "investedUsd": 0,
+        "openedAt": 1755309588583,
+        "mode": "demo",
+        "ownerId": 7996740495,
+        "chatId": 7996740495,
+        "uid": 7996740495,
+        "user_id": 7996740495,
+        "isOpen": false,
+        "status": "closed",
+        "originalUsd": 1000
+      },
+      {
+        "id": "demo-1755310725117",
+        "mint": "So11111111111111111111111111111111111111112",
+        "symbol": "SOLBOMB",
+        "entryPriceUsd": 0.0032,
+        "investedUsd": 0,
+        "openedAt": 1755310725117,
+        "mode": "demo",
+        "ownerId": 7996740495,
+        "chatId": 7996740495,
+        "uid": 7996740495,
+        "user_id": 7996740495,
+        "isOpen": false,
+        "status": "closed"
+      },
+      {
+        "id": "demo-1755311035681",
+        "mint": "So11111111111111111111111111111111111111112",
+        "symbol": "SOLBOMB",
+        "entryPriceUsd": 0.0032,
+        "investedUsd": 0,
+        "openedAt": 1755311035681,
+        "mode": "demo",
+        "ownerId": 7996740495,
+        "chatId": 7996740495,
+        "uid": 7996740495,
+        "user_id": 7996740495,
+        "isOpen": false,
+        "status": "closed"
+      },
+      {
+        "id": "demo-1755311326508",
+        "mint": "So11111111111111111111111111111111111111112",
+        "symbol": "SOLBOMB",
+        "entryPriceUsd": 0.0032,
+        "investedUsd": 0,
+        "openedAt": 1755311326508,
+        "mode": "demo",
+        "ownerId": 7996740495,
+        "chatId": 7996740495,
+        "uid": 7996740495,
+        "user_id": 7996740495,
+        "isOpen": false,
+        "status": "closed"
+      },
+      {
+        "id": "demo-1755311784658",
+        "mint": "So11111111111111111111111111111111111111112",
+        "symbol": "SOLBOMB",
+        "entryPriceUsd": 0.0032,
+        "investedUsd": 0,
+        "openedAt": 1755311784658,
+        "mode": "demo",
+        "ownerId": 7996740495,
+        "chatId": 7996740495,
+        "uid": 7996740495,
+        "user_id": 7996740495,
+        "isOpen": false,
+        "status": "closed"
+      },
+      {
+        "id": "demo-1755312417211",
+        "mint": "So11111111111111111111111111111111111111112",
+        "symbol": "SOLBOMB",
+        "entryPriceUsd": 0.0032,
+        "investedUsd": 0,
+        "openedAt": 1755312417211,
+        "mode": "demo",
+        "ownerId": 7996740495,
+        "chatId": 7996740495,
+        "uid": 7996740495,
+        "user_id": 7996740495,
+        "isOpen": false,
+        "status": "closed"
+      },
+      {
+        "id": "demo-1755312984313",
+        "mint": "So11111111111111111111111111111111111111112",
+        "symbol": "SOLBOMB",
+        "entryPriceUsd": 0.0032,
+        "investedUsd": 0,
+        "openedAt": 1755312984313,
+        "mode": "demo",
+        "ownerId": 7996740495,
+        "chatId": 7996740495,
+        "uid": 7996740495,
+        "user_id": 7996740495,
+        "isOpen": false,
+        "status": "closed"
+      },
+      {
+        "id": "demo-1755314054907",
+        "mint": "So11111111111111111111111111111111111111112",
+        "symbol": "SOLBOMB",
+        "entryPriceUsd": 0.0032,
+        "investedUsd": 0,
+        "originalUsd": 1000,
+        "openedAt": 1755314054907,
+        "mode": "demo",
+        "isOpen": false,
+        "status": "closed"
+      },
+      {
+        "id": "demo-1755314062855",
+        "mint": "So11111111111111111111111111111111111111112",
+        "symbol": "SOLBOMB",
+        "entryPriceUsd": 0.0032,
+        "investedUsd": 0,
+        "originalUsd": 100,
+        "openedAt": 1755314062855,
+        "mode": "demo",
+        "isOpen": false,
+        "status": "closed"
+      },
+      {
+        "id": "demo-1755314074313",
+        "mint": "So11111111111111111111111111111111111111112",
+        "symbol": "SOLBOMB",
+        "entryPriceUsd": 0.0032,
+        "investedUsd": 0,
+        "originalUsd": 500,
+        "openedAt": 1755314074313,
+        "mode": "demo",
+        "isOpen": false,
+        "status": "closed"
+      },
+      {
+        "id": "demo-1755314085234",
+        "mint": "So11111111111111111111111111111111111111112",
+        "symbol": "SOLBOMB",
+        "entryPriceUsd": 0.0032,
+        "investedUsd": 0,
+        "originalUsd": 1500,
+        "openedAt": 1755314085234,
+        "mode": "demo",
+        "isOpen": false,
+        "status": "closed"
+      },
+      {
+        "id": "demo-1755314616417",
+        "mint": "So11111111111111111111111111111111111111112",
+        "symbol": "SOLBOMB",
+        "entryPriceUsd": 0.0032,
+        "investedUsd": 0,
+        "originalUsd": 1000,
+        "openedAt": 1755314616417,
+        "mode": "demo",
+        "isOpen": false,
+        "status": "closed"
+      },
+      {
+        "id": "demo-1755314624405",
+        "mint": "So11111111111111111111111111111111111111112",
+        "symbol": "SOLBOMB",
+        "entryPriceUsd": 0.0032,
+        "investedUsd": 0,
+        "originalUsd": 1025,
+        "openedAt": 1755314624405,
+        "mode": "demo",
+        "isOpen": false,
+        "status": "closed"
+      },
+      {
+        "id": "demo-1755314674689",
+        "mint": "So11111111111111111111111111111111111111112",
+        "symbol": "SOLBOMB",
+        "entryPriceUsd": 0.0032,
+        "investedUsd": 0,
+        "originalUsd": 2250,
+        "openedAt": 1755314674689,
+        "mode": "demo",
+        "isOpen": false,
+        "status": "closed"
+      }
+    ]
+  },
+  "demo": {
+    "cash": 10000
   }
 }

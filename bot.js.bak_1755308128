@@ -14,7 +14,7 @@ import registerAjustes     from "./src/commands/ajustes.js";
 import registerSniperReset from "./src/commands/sniperReset.js";
 import registerAutoSniper  from "./src/commands/autoSniper.js";
 import registerMensaje     from "./src/commands/mensaje.js";
-import registerDemoBuy  from './src/commands/demo_buy.js';
+import registerDemoBuy from './src/commands/demo_buy.js';
 import registerRegistro    from "./src/commands/registro.js";
 import registerWallet      from "./src/commands/wallet.js";
 import registerHealth      from "./src/commands/health.js";
@@ -111,6 +111,7 @@ if (!global.__HX_HANDLERS_REGISTERED__) {
   try { registerWallet(bot, { quickNodeClient, phantomClient, trading }); console.log("✅ Handler cargado: wallet.js"); } catch(e){ console.error("❌ wallet:", e?.message||e); }
   try { registerRegistro(bot, { trading }); console.log("✅ Handler cargado: registro.js"); } catch(e){ console.error("❌ registro:", e?.message||e); }
   try { registerMensaje(bot); console.log("✅ Handler cargado: mensaje.js"); } catch(e){ console.error("❌ mensaje:", e?.message||e); }
+import registerDemoBuy from './src/commands/demo_buy.js';
   try { registerHealth(bot, { quickNodeClient, phantomClient }); console.log("✅ Handler cargado: health.js"); } catch(e){ console.error("❌ health:", e?.message||e); }
   try { registerStatus(bot); console.log("✅ Handler cargado: status.js"); } catch(e){ console.error("❌ status:", e?.message||e); }
   try { registerInitSheets(bot); console.log("✅ Handler cargado: initSheets.js"); } catch(e){ console.error("❌ initSheets:", e?.message||e); }
@@ -134,4 +135,16 @@ bot.onText(/^\/discord$/, (msg) => {
     { disable_web_page_preview: true }
   ).catch(()=>{});
 });
-  try { registerDemoBuy(bot); console.log('✅ Handler cargado: demo_buy.js'); } catch (e) { console.error('❌ demo_buy:', e?.message||e); }
+  try { registerDemoBuy(bot); console.log('✅ Handler cargado: demo_buy.js'); } catch(e){ console.error('❌ demo_buy:', e?.message||e); }
+    // --- dev-only: comando oculto en menú, visible SOLO para el owner ---
+    if (process.env.DEV_OWNER_ID) {
+      try {
+        await bot.setMyCommands(
+          [{ command: 'demo_buy', description: '[dev] compra demo rápida' }],
+          { scope: { type: 'chat', chat_id: Number(process.env.DEV_OWNER_ID) } }
+        );
+        console.log('🟦 [Slash] /demo_buy registrado en scope privado para OWNER=', process.env.DEV_OWNER_ID);
+      } catch (e) {
+        console.error('❌ setMyCommands (owner scope):', e?.message || e);
+      }
+    }
