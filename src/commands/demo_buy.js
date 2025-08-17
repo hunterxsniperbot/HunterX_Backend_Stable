@@ -1,46 +1,42 @@
-// /demobuy <SIMBOLO> <USD>
-// ej: /demobuy SOLBOMB 1000
 import { loadState, saveState } from '../services/state_compat.js';
+import { getPriceUSD } from '../services/prices.js';
 
-export default function registerDemoBuy(bot) {
-  bot.onText(/^\/demo(?:_)?buy(?:@.+)?\s+([A-Za-z0-9_.$-]{1,16})\s+([0-9]+(?:\.[0-9]+)?)$/i, async (msg, m) => {
+export default function registerDemoBuy(bot){
+  bot.onText(/^\/demobuy(?:@[\w_]+)?\s+([A-Za-z0-9_\-\.]{1,20})\s+([0-9]+(?:\.[0-9]+)?)$/, async (msg, m) => {
     const chatId = msg.chat.id;
-    const symbol = String(m[1]).toUpperCase();
-    const investedUsd = Number(m[2]);
+    const symbol = String(m[1] || 'TOKEN').toUpperCase().slice(0, 20);
+    const investedUsd = Math.max(1, Number(m[2] || 0));
+
+    // Para demo: si no pasás mint, usamos WSOL como “proxy de precio”
+    const mint = 'So11111111111111111111111111111111111111112';
+
+    let priceNow = 0;
+    try { const r = await getPriceUSD(mint); priceNow = Number(r?.price || r || 0); } catch {}
+    if (priceNow <= 0) return bot.sendMessage(chatId, '❌ No pude obtener precio para demo.').catch(()=>{});
 
     const st = loadState();
-    st.positions = st.positions || {};
-    st.positions.demo = st.positions.demo || [];
-    st.demo = st.demo || {};
-    // si no hay cash demo, lo inicializamos a 10k - sum(invertido abierto)
-    if (typeof st.demo.cash !== 'number') {
-      const sumInv = st.positions.demo.filter(p=>p.isOpen!==false)
-        .reduce((a,p)=>a+Number(p.investedUsd||0),0);
-      st.demo.cash = Math.max(0, 10_000 - sumInv);
-    }
+    // verificar cash demo
     if (st.demo.cash < investedUsd) {
-      await bot.sendMessage(chatId, `❌ DEMO: saldo insuficiente. Cash: $${st.demo.cash.toFixed(2)}`);
-      return;
+      return bot.sendMessage(chatId, `❌ DEMO: saldo insuficiente. Libre: $${st.demo.cash.toFixed(2)}`).catch(()=>{});
     }
 
     const now = Date.now();
-    const mint = 'So11111111111111111111111111111111111111112'; // placeholder
     const pos = {
       id: `demo-${now}`,
       mint,
       symbol,
-      entryPriceUsd: 0.0032,
+      entryPriceUsd: priceNow,   // ← precio real del momento
       investedUsd,
-      originalUsd: investedUsd,  // <-- tamaño inicial
       openedAt: now,
       mode: 'demo',
       isOpen: true,
-      status: 'open',
+      status: 'open'
     };
+
     st.positions.demo.push(pos);
-    st.demo.cash = Number((st.demo.cash - investedUsd).toFixed(2));
+    st.demo.cash = Number(st.demo.cash || 0) - investedUsd;
     saveState(st);
 
-    await bot.sendMessage(chatId, `✅ DEMO buy: $${symbol} por $${investedUsd.toFixed(2)}. Cash: $${st.demo.cash.toFixed(2)}. Probá /wallet`);
+    bot.sendMessage(chatId, `✅ DEMO BUY: ${symbol} por $${investedUsd.toFixed(2)} (entry $${priceNow.toFixed(4)}). Probá /wallet`).catch(()=>{});
   });
 }
