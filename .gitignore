@@ -35,3 +35,7 @@ node_modules/
 logs/
 .env
 secrets/
+
+# Runtime local
+/data/
+*.pid
