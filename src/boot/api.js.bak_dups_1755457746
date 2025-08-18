@@ -1,0 +1,410 @@
+import http from 'node:http';
+
+// ==== API helpers (aislados, nombres únicos) ================================
+const API_REFRESH_MS          = Number(process.env.WALLET_REFRESH_MS || 2000);
+const RESIDUAL_USD            = Number(process.env.WALLET_RESIDUAL_USD || 1);
+
+function normalizeDemoPriceApi(entry, market) {
+  const e = Number(entry||0), m = Number(market||0);
+  if (e<=0) return m>0?m:0;
+  if (DEMO_PRICE_MODE_API === 'entry') return e;
+  if (DEMO_PRICE_MODE_API === 'clamp') {
+    const min = e*DEMO_PRICE_MIN_MULT_API;
+    const max = e*DEMO_PRICE_MAX_MULT_API;
+    const base = m>0?m:e;
+    return Math.max(min, Math.min(max, base));
+  }
+  return m>0?m:e; // 'live' o desconocido: mercado con fallback a entry
+}
+
+function fmtUSD(n){ return Number(n||0).toLocaleString('en-US',{style:'currency',currency:'USD',maximumFractionDigits:2}); }
+
+async function computeWalletApi(mode='demo'){
+  mode = (mode||'demo').toLowerCase()==='real' ? 'real' : 'demo';
+const RESIDUAL_USD        = Number(process.env.WALLET_RESIDUAL_USD || 1.00);
+
+// Precio DEMO: clamp por defecto (evita PnL irreales al no tener feed real)
+
+// Runner de health flexible (soporta distintos exports)
+const runHealthChecks =
+  HC.runAllChecks || HC.runHealthChecks || HC.runChecks || HC.run ||
+  (HC.default && (HC.default.runAllChecks || HC.default.runHealthChecks || HC.default.run)) ||
+  null;
+
+// -------- Utils HTTP ----------
+function writeJson(res, code, obj) {
+  res.writeHead(code, {
+    'content-type': 'application/json',
+    'cache-control': 'no-store',
+    'access-control-allow-origin': '*'
+  });
+  res.end(JSON.stringify(obj));
+}
+
+async function readBody(req) {
+  const chunks = [];
+  for await (const c of req) chunks.push(c);
+  const raw = Buffer.concat(chunks).toString('utf8');
+  try { return raw ? JSON.parse(raw) : {}; } catch { return {}; }
+}
+
+// -------- Precios / PnL ----------
+function normalizeDemoPrice_OLD(entry, market) {
+  const e = Number(entry || 0);
+  const m = Number(market || 0);
+  if (e <= 0) return m > 0 ? m : 0;
+
+  if (DEMO_PRICE_MODE === 'entry') return e;
+  if (DEMO_PRICE_MODE === 'clamp') {
+    const min = e * DEMO_PRICE_MIN_MULT;
+    const max = e * DEMO_PRICE_MAX_MULT;
+    const base = m > 0 ? m : e;
+    return Math.max(min, Math.min(max, base));
+  }
+  // 'live' o desconocido: uso mercado con fallback a entry
+  return m > 0 ? m : e;
+}
+
+async function fetchPrices(mints) {
+  const out = new Map();
+  await Promise.all(
+    mints.map(async (mint) => {
+      try {
+        const r = await getPriceUSD(mint);
+        out.set(mint, Number(r?.price || r || 0));
+      } catch {
+        out.set(mint, 0);
+      }
+    })
+  );
+  return out;
+}
+
+function calcPnl(entry, priceNow, invested) {
+  let pct = 0, usd = 0;
+  const e = Number(entry || 0);
+  const p = Number(priceNow || 0);
+  const inv = Number(invested || 0);
+  if (e > 0 && p > 0 && inv > 0) {
+    pct = (p / e - 1) * 100;
+    usd = (pct / 100) * inv;
+  }
+  return { pct, usd };
+}
+
+function fmtHeaderPnl(usd, pct) {
+  const sUsd = (usd >= 0 ? '+' : '-') + '$' + Math.abs(Number(usd || 0)).toFixed(2);
+  const sPct = (pct >= 0 ? '+' : '-') + Math.abs(Number(pct || 0)).toFixed(1) + '%';
+  return `${sUsd} (${sPct})`;
+}
+
+function pieceLabel(frac, pnlUsd, pnlPct) {
+  const usd = Number(pnlUsd || 0) * frac;
+  const pct = Number(pnlPct || 0) * frac;
+  const sUsd = (usd >= 0 ? '+' : '-') + '$' + Math.abs(usd).toFixed(2);
+  const sPct = (pct >= 0 ? '+' : '-') + Math.abs(pct).toFixed(1) + '%';
+  return `${Math.round(frac * 100)}% (${sUsd} · ${sPct})`;
+}
+
+// -------- Wallet builder ----------
+async function computeWallet(modeIn) {
+  const mode = (String(modeIn || 'demo').toLowerCase() === 'real') ? 'real' : 'demo';
+  const st = loadState();
+  st.positions = st.positions || {};
+
+  const list = Array.isArray(st.positions[mode]) ? st.positions[mode] : [];
+  const open = list.filter(p => p.isOpen !== false);
+  open.sort((a, b) => Number(b.openedAt || 0) - Number(a.openedAt || 0));
+
+  const mints = [...new Set(open.map(p => p.mint).filter(Boolean))];
+  const priceMap = await fetchPrices(mints);
+
+  const positions = open.map(p => {
+    const entry = Number(p.entryPriceUsd || 0);
+    let priceNow = Number(priceMap.get(p.mint) || entry || 0);
+    if ((p.mode || mode) === 'demo') priceNow = normalizeDemoPrice(entry, priceNow);
+
+    const invested = Number(p.investedUsd || 0);
+    const { pct, usd } = calcPnl(entry, priceNow, invested);
+
+    const left = (f) => invested * (1 - f);
+    const isRem = (x) => x < RESIDUAL_USD;
+    const remainder = isRem(left(0.25)) || isRem(left(0.50)) || isRem(left(0.75));
+
+    return {
+      id: p.id,
+      mint: p.mint,
+      symbol: p.symbol,
+      mode: p.mode || mode,
+      entryPriceUsd: entry,
+      priceNowUsd: Number(priceNow),
+      investedUsd: invested,
+      pnlUsd: +Number(usd).toFixed(2),
+      pnlPct: +Number(pct).toFixed(1),
+      openedAt: p.openedAt,
+      isOpen: true,
+      links: {
+        dexscreener: `https://dexscreener.com/solana/${p.mint}`,
+        solscan:     `https://solscan.io/token/${p.mint}`,
+        jupiter:     `https://jup.ag/swap/SOL-${p.mint}`,
+        raydium:     `https://raydium.io/swap/?inputCurrency=sol&outputCurrency=${p.mint}`
+      },
+      buttons: {
+        b25:  { label: pieceLabel(0.25, usd, pct), data: `sell:${p.id}:25`  },
+        b50:  { label: pieceLabel(0.50, usd, pct), data: `sell:${p.id}:50`  },
+        b75:  { label: pieceLabel(0.75, usd, pct), data: `sell:${p.id}:75`  },
+        b100: { label: remainder ? '💯 Resto' : '💯 Vender todo', data: `sell:${p.id}:100`, isRemainder: remainder }
+      }
+    };
+  });
+
+  // Balances (USD) — DEMO: usa st.demo.cash si existe; si no, 10k - invertido
+  const investedSum = positions.reduce((a, p) => a + Number(p.investedUsd || 0), 0);
+  st.demo = st.demo || {};
+  if (typeof st.demo.cash !== 'number') {
+    st.demo.cash = Math.max(0, 10000 - investedSum);
+  }
+
+  const balances = {
+    demo: {
+      investedUsd: (mode === 'demo') ? investedSum :
+        (Array.isArray(st.positions.demo) ? st.positions.demo.filter(p => p.isOpen !== false)
+          .reduce((a, x) => a + Number(x.investedUsd || 0), 0) : 0),
+      cashUsd: Number(st.demo.cash || 0),
+      totalUsd: 0
+    },
+    real: {
+      investedUsd: 0, // si más adelante guardás real.cash/real.invested, calcular aquí
+      cashUsd:     0,
+      totalUsd:    0
+    }
+  };
+  balances.demo.totalUsd = +Number(balances.demo.investedUsd + balances.demo.cashUsd).toFixed(2);
+
+  const headerSym = positions[0]?.symbol || '-';
+  const headerTxt = fmtHeaderPnl(positions[0]?.pnlUsd || 0, positions[0]?.pnlPct || 0);
+
+  return {
+    ts: Date.now(),
+    mode,
+    refreshMs: WALLET_REFRESH_MS,
+    balances,
+    positions,
+    selectedId: positions[0]?.id || null,
+    header: { symbol: headerSym, pnlText: headerTxt }
+  };
+}
+
+// -------- Locks para ventas (anti doble tap) ----------
+const LOCKS = new Map();
+
+// -------- HTTP server ----------
+const srv = http.createServer(async (req, res) => {
+  try {
+    // CORS
+    if (req.method === 'OPTIONS') return writeJson(res, 204, {});
+
+    const url = new URL(req.url, 'http://localhost');
+    const path = url.pathname;
+
+    // GET /api/wallet
+    if (req.method === 'GET' && path === '/api/wallet') {
+      const mode = (url.searchParams.get('mode') || 'demo').toLowerCase() === 'real' ? 'real' : 'demo';
+      const wallet = await computeWalletApi(mode);
+       try { fixupPositions(wallet); } catch {}
+      return writeJson(res, 200, finalizeWallet(wallet));
+    }
+
+    // POST /api/sell
+    if (req.method === 'POST' && path === '/api/sell') {
+      const body = await readBody(req);
+      const posId = String(body?.posId || '').trim();
+      const pct   = Math.max(1, Math.min(100, Number(body?.pct || 0)));
+
+      if (!posId) return writeJson(res, 400, { ok: false, error: 'missing_posId' });
+
+      const st = loadState();
+      st.positions = st.positions || {};
+      const inDemo = Array.isArray(st.positions.demo) ? st.positions.demo : [];
+      const inReal = Array.isArray(st.positions.real) ? st.positions.real : [];
+      const findById = (arr) => arr.find(p => p.id === posId);
+      let pos = findById(inDemo) || findById(inReal);
+      if (!pos || pos.isOpen === false) return writeJson(res, 404, { ok: false, error: 'position_not_found' });
+
+      if (LOCKS.has(posId)) return writeJson(res, 409, { ok: false, error: 'locked' });
+      LOCKS.set(posId, Date.now());
+      try {
+        const frac = pct / 100;
+        const invBefore = Number(pos.investedUsd || 0);
+        const pieceValue = invBefore * frac;
+
+        pos.investedUsd = Math.max(0, invBefore - pieceValue);
+
+        let residualClosed = false;
+        if (pos.investedUsd < RESIDUAL_USD) {
+          pos.isOpen = false;
+          pos.status = 'closed';
+          pos.closedAt = Date.now();
+          residualClosed = true;
+        }
+
+        if ((pos.mode || 'demo') === 'demo') {
+          st.demo = st.demo || {};
+          st.demo.cash = Number((Number(st.demo.cash || 0) + pieceValue).toFixed(2));
+        }
+
+        saveState(st);
+        const wallet = await computeWallet(pos.mode || 'demo');
+        return writeJson(res, 200, { ok: true, filledUsd: +pieceValue.toFixed(2), residualClosed, wallet: finalizeWallet2(wallet)});
+      } finally {
+        setTimeout(() => LOCKS.delete(posId), 3000);
+      }
+    }
+
+    // GET /api/salud
+    if (req.method === 'GET' && path === '/api/salud') {
+      const fn = runHealthChecks || (async () => []);
+      const r = await fn({ timeoutMs: 1500 }).catch(() => []);
+      return writeJson(res, 200, r);
+    }
+
+    // Not found
+    return writeJson(res, 404, { ok: false, error: 'not_found' });
+  } catch (e) {
+    return writeJson(res, 500, { ok: false, error: String(e?.message || e) });
+  }
+});
+
+srv.listen(PORT, '0.0.0.0', () => {
+  console.log(`🌐 API escuchando en http://0.0.0.0:${PORT}`);
+});
+
+// --- DEMO price normalization (top-level) ---
+
+function normalizeDemoPrice(entry, market) {
+  const e = Number(entry||0);
+  const m = Number(market||0);
+  if (e<=0) return m>0?m:0;
+  if (DEMO_PRICE_MODE === 'entry') return e;
+  if (DEMO_PRICE_MODE === 'clamp') {
+    const min = e*DEMO_PRICE_MIN_MULT;
+    const max = e*DEMO_PRICE_MAX_MULT;
+    const base = m>0?m:e;
+    return Math.max(min, Math.min(max, base));
+  }
+  return m>0?m:e; // 'live' (o desconocido): mercado con fallback a entry
+}
+
+function fixupPositions_OLD(obj) {
+  try {
+    const arr = Array.isArray(obj?.positions) ? obj.positions : [];
+    for (const p of arr) {
+      const entry = Number(p.entryPriceUsd || 0);
+      let priceNowUsd = Number(p.priceNowUsd || 0);
+      if (!priceNowUsd || priceNowUsd <= 0) priceNowUsd = entry;
+      if ((p.mode || 'demo') === 'demo') priceNowUsd = normalizeDemoPrice(entry, priceNowUsd);
+      p.priceNowUsd = priceNowUsd;
+
+      const inv = Number(p.investedUsd || 0);
+      let pct = 0, usd = 0;
+      if (entry > 0 && inv > 0) {
+        pct = (priceNowUsd / entry - 1) * 100;
+        usd = (pct / 100) * inv;
+      }
+      p.pnlPct = Number(pct);
+      p.pnlUsd = Number(usd);
+    }
+  } catch {}
+const DEMO_PRICE_MODE      = process.env.DEMO_PRICE_MODE      || 'clamp';
+const DEMO_PRICE_MIN_MULT  = Number(process.env.DEMO_PRICE_MIN_MULT || 0.5);
+const DEMO_PRICE_MAX_MULT  = Number(process.env.DEMO_PRICE_MAX_MULT || 2);
+
+function finalizeWallet(w) {
+  try { if (w && w.positions) fixupPositions(w); } catch {}
+  return w;
+}
+
+}
+
+// === SAFETY HELPERS (appended) ===============================================
+const DEMO_PRICE_MODE_SAFE      = process.env.DEMO_PRICE_MODE      || 'clamp';
+const DEMO_PRICE_MIN_MULT_SAFE  = Number(process.env.DEMO_PRICE_MIN_MULT || 0.5);
+const DEMO_PRICE_MAX_MULT_SAFE  = Number(process.env.DEMO_PRICE_MAX_MULT || 2);
+
+// Normaliza precio para DEMO (clamp/entry/live)
+function normalizePrice(entry, market) {
+  const e = Number(entry||0), m = Number(market||0);
+  if (e<=0) return m>0?m:0;
+  if (DEMO_PRICE_MODE_SAFE === 'entry') return e;
+  if (DEMO_PRICE_MODE_SAFE === 'clamp') {
+    const min=e*DEMO_PRICE_MIN_MULT_SAFE, max=e*DEMO_PRICE_MAX_MULT_SAFE, base=m>0?m:e;
+    return Math.max(min, Math.min(max, base));
+  }
+  return m>0?m:e; // 'live'
+}
+
+// Recalcula priceNowUsd/PnL por posición (usd y %)
+function fixupPositions2(obj){
+  try{
+    const arr = Array.isArray(obj?.positions)?obj.positions:[];
+    for (const p of arr){
+      const entry = Number(p.entryPriceUsd||0);
+      let now   = Number(p.priceNowUsd||0);
+      if (!now || now<=0) now = entry;
+      if ((p.mode||'demo')==='demo') now = normalizePrice(entry, now);
+      p.priceNowUsd = now;
+
+      const inv = Number(p.investedUsd||0);
+      let pct=0, usd=0;
+      if (entry>0 && inv>0){ pct = (now/entry - 1)*100; usd = (pct/100)*inv; }
+      p.pnlPct = Number(pct);
+      p.pnlUsd = Number(usd);
+    }
+  } catch {}
+}
+
+// Envuelve wallet para asegurar números coherentes
+function finalizeWallet2(w){ try{ if(w&&w.positions) fixupPositions2(w); }catch{} return w; }
+
+// (Opcional) constructor neutro si alguna vez quieres usarlo:
+// async function buildWallet(mode='demo'){ /* si existe computeWallet, úsalo; si no, devuelve stub */ }
+
+// ============================================================================
+
+// === SAFETY HELPERS (appended) ===============================================
+const DEMO_PRICE_MODE_SAFE      = process.env.DEMO_PRICE_MODE      || 'clamp';
+const DEMO_PRICE_MIN_MULT_SAFE  = Number(process.env.DEMO_PRICE_MIN_MULT || 0.5);
+const DEMO_PRICE_MAX_MULT_SAFE  = Number(process.env.DEMO_PRICE_MAX_MULT || 2);
+
+function normalizePrice(entry, market) {
+  const e = Number(entry||0), m = Number(market||0);
+  if (e<=0) return m>0?m:0;
+  if (DEMO_PRICE_MODE_SAFE === 'entry') return e;
+  if (DEMO_PRICE_MODE_SAFE === 'clamp') {
+    const min=e*DEMO_PRICE_MIN_MULT_SAFE, max=e*DEMO_PRICE_MAX_MULT_SAFE, base=m>0?m:e;
+    return Math.max(min, Math.min(max, base));
+  }
+  return m>0?m:e;
+}
+
+function fixupPositions2(obj){
+  try{
+    const arr = Array.isArray(obj?.positions)?obj.positions:[];
+    for (const p of arr){
+      const entry = Number(p.entryPriceUsd||0);
+      let now   = Number(p.priceNowUsd||0);
+      if (!now || now<=0) now = entry;
+      if ((p.mode||'demo')==='demo') now = normalizePrice(entry, now);
+      p.priceNowUsd = now;
+
+      const inv = Number(p.investedUsd||0);
+      let pct=0, usd=0;
+      if (entry>0 && inv>0){ pct = (now/entry - 1)*100; usd = (pct/100)*inv; }
+      p.pnlPct = Number(pct);
+      p.pnlUsd = Number(usd);
+    }
+  } catch {}
+}
+
+function finalizeWallet2(w){ try{ if(w&&w.positions) fixupPositions2(w); }catch{} return w; }
+// ============================================================================

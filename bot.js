@@ -7,6 +7,7 @@ setDefaultResultOrder("ipv4first");
 import "./src/boot/http.js";
 import "./src/boot/prewarm.js";
 import { hookTyping } from "./src/boot/typing.js";
+import "./src/boot/api.js";
 
 /* Telegram */
 import TelegramBot from "node-telegram-bot-api";

@@ -11,7 +11,9 @@
     "test:sheets": "node scripts/testSheets.js",
     "test:dex": "node scripts/testDexScreener.js",
     "test:redis": "node scripts/testRedis.js",
-    "tag": "bash scripts/tagAndLog.sh"
+    "tag": "bash scripts/tagAndLog.sh",
+    "seed:demo": "node scripts/seed_demo.cjs",
+    "price:demo": "node scripts/bump_demo_price.cjs"
   },
   "dependencies": {
     "@solana/web3.js": "^1.98.4",

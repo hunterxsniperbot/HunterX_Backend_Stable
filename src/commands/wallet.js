@@ -1,319 +1,215 @@
-// src/commands/wallet.js — vista única /wallet con selección, PnL en botones y refresco
-import crypto from 'node:crypto';
-import { loadState, saveState } from '../services/state_compat.js';
-import { getPriceUSD }          from '../services/prices.js';
-import { loadPolicySync }       from '../policy.js';
+// src/commands/wallet.js — minimalista, API-first, sin teclado Telegram (DEMO+REAL)
+// ESM module
 
-const REFRESH_MS   = Number(process.env.WALLET_REFRESH_MS || 5000);
-const RESIDUAL_USD = Number(process.env.WALLET_RESIDUAL_USD || 1);
-const MAX_POS      = 10;
-
-const SLOTS = new Map(); // chatId -> { msgId, auto, timer, lastHash, selectedId, busy, busyAt }
+const API_BASE = process.env.API_BASE || 'http://127.0.0.1:3000';
 
 const EMO = {
-  header:  '📱',
-  real:    '💳',
-  demo:    '🧪',
-  token:   '🪙',
-  entry:   '📥',
-  price:   '📤',
-  invest:  '💵',
-  pnl:     '📈',
-  linkDs:  '📊',
-  linkSc:  '📎',
-  linkJp:  '🌀',
-  linkRd:  '🌊',
-  selOn:   '✅',
-  selOff:  '🎯',
-  refresh: '🔄',
-  autoOn:  '🟢',
-  autoOff: '⚪',
-  sell:    '💯',
+  header: '📱',
+  real:   '💳',
+  demo:   '🧪',
+  token:  '🪙',
+  entry:  '📥',
+  price:  '📤',
+  invest: '💵',
+  pnl:    '📈',
+  linkDs: '📊',
+  linkSc: '📎',
+  linkJp: '🌀',
+  linkRd: '🌊',
 };
 
-function fmtUsd(n){ return Number(n||0).toLocaleString('en-US',{style:'currency',currency:'USD',minimumFractionDigits:2,maximumFractionDigits:2}); }
-function safeSymbol(s){ return String(s||'TOKEN').slice(0,12).toUpperCase(); }
-function round2(x){ return Math.round(Number(x||0)*100)/100; }
-
-function dsLink(mint){ return `https://dexscreener.com/solana/${mint}`; }
-function scLink(mint){ return `https://solscan.io/token/${mint}`; }
-function jpLink(mint){ return `https://jup.ag/swap/SOL-${mint}`; }
-function rdLink(mint){ return `https://raydium.io/swap/?inputCurrency=sol&outputCurrency=${mint}`; }
-
-function pnlFor(pos, priceNow) {
-  // Versión de texto (por compatibilidad)
-  const entry = Number(pos.entryPriceUsd||0);
-  const inv   = Number(pos.investedUsd||0);
-  if (entry<=0 || inv<=0 || priceNow<=0) return { pct:'0.0%', usd:fmtUsd(0) };
-  const pct = (priceNow/entry - 1) * 100;
-  const usd = (pct/100) * inv;
-  return { pct:`${pct.toFixed(1)}%`, usd:fmtUsd(usd) };
-}
-
-// Versión NUMÉRICA (para botones)
-function pnlNums(pos, priceNow) {
-  const entry = Number(pos.entryPriceUsd||0);
-  const inv   = Number(pos.investedUsd||0);
-  if (entry<=0 || inv<=0 || priceNow<=0) return { pct:0, usd:0 };
-  const pct = (priceNow/entry - 1) * 100;
-  const usd = (pct/100) * inv;
-  return { pct, usd };
-}
-
-async function fetchPrices(mints){
-  const out = new Map();
-  await Promise.all(mints.map(async (m)=>{
-    try{
-      const r=await getPriceUSD(m);
-      out.set(m, Number(r?.price||r||0));
-    } catch {
-      out.set(m, 0);
-    }
-  }));
-  return out;
-}
-
-function hashPayload(text,kb,selectedId,auto){
-  const h=crypto.createHash('sha1');
-  h.update(text||''); h.update(JSON.stringify(kb||{})); h.update(String(selectedId||'')); h.update(String(auto?'1':'0'));
-  return h.digest('hex');
-}
-
-function getActiveMode(){
-  try {
-    return (loadPolicySync()?.execution?.mode) || 'demo';
-  } catch {
-    return 'demo';
-  }
-}
-
-function buildKeyboard(positions, slot, prices){
-  const kb = [];
-
-  // 1) Selector por token (1 botón por fila) con PnL $
-  positions.slice(0, MAX_POS).forEach(p=>{
-    const sel  = (p.id === slot.selectedId);
-    const px   = prices.get(p.mint) || 0;
-    const pn   = pnlNums(p, px);
-    const sign = pn.usd>=0?'+':'-';
-    const usd  = `${sign}$${Math.abs(pn.usd).toFixed(2)}`;
-    kb.push([{ text: `${sel?EMO.selOn:EMO.selOff} ${safeSymbol(p.symbol)} ${usd}`, callback_data: `w:sel:${p.id}` }]);
+// ---------- utils ----------
+function fmtUsd(n) {
+  const v = Number(n || 0);
+  return v.toLocaleString('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
   });
+}
+function fmtPct(n) {
+  const v = Number(n || 0);
+  const sign = v >= 0 ? '+' : '';
+  return `${sign}${v.toFixed(1)}%`;
+}
+function safeSymbol(s) { return String(s || 'TOKEN').slice(0, 20).toUpperCase(); }
 
-  // 2) Botones de venta 25/50/75 y 100%/Resto para la seleccionada
-  const posSel = positions.find(p=>p.id===slot.selectedId) || positions[0];
-  if (posSel){
-    const price = prices.get(posSel.mint) || 0;
-    const pn    = pnlNums(posSel, price);
-    const fmt   = (n)=> (n>=0?'+':'-') + '$' + Math.abs(n).toFixed(2);
-    const label = (f)=> `${Math.round(f*100)}% (${fmt(pn.usd*f)} · ${(pn.pct*f>=0?'+':'')}${(pn.pct*f).toFixed(1)}%)`;
+function dsLink(mint) { return `https://dexscreener.com/solana/${mint}`; }
+function scLink(mint) { return `https://solscan.io/token/${mint}`; }
+function jpLink(mint) { return `https://jup.ag/swap/SOL-${mint}`; }
+function rdLink(mint) { return `https://raydium.io/swap/?inputCurrency=sol&outputCurrency=${mint}`; }
 
-    const left25 = posSel.investedUsd * (1-0.25);
-    const left50 = posSel.investedUsd * (1-0.50);
-    const left75 = posSel.investedUsd * (1-0.75);
-    const isRemainder = (left)=> left < RESIDUAL_USD;
-
-    kb.push([
-      { text: label(0.25), callback_data: `sell:${posSel.id}:25` },
-      { text: label(0.50), callback_data: `sell:${posSel.id}:50` },
-      { text: label(0.75), callback_data: `sell:${posSel.id}:75` },
-      { text: `${isRemainder(left25)||isRemainder(left50)||isRemainder(left75)?'💯 Resto':'💯 Vender todo'}`, callback_data: `sell:${posSel.id}:100` },
-    ]);
+// ---------- API ----------
+async function getWalletFromApi(mode = 'demo') {
+  const url = `${API_BASE}/api/wallet?mode=${encodeURIComponent(mode)}`;
+  const res = await fetch(url, { method: 'GET' });
+  if (!res.ok) {
+    const t = await res.text().catch(()=> '');
+    throw new Error(`GET /api/wallet ${res.status}: ${t}`);
   }
-
-  // 3) Footer: Refresh + Auto ON/OFF
-  kb.push([
-    { text: `${EMO.refresh} Refrescar`, callback_data: 'w:refresh' },
-    { text: `${slot.auto?EMO.autoOn:EMO.autoOff} Auto: ${slot.auto?'ON':'OFF'}`, callback_data: 'w:auto' }
-  ]);
-
-  return { inline_keyboard: kb };
+  return res.json();
 }
 
-function renderText(activeMode, positions, prices, st){
-  const demoCount = positions.filter(p=>p.mode==='demo').length;
-  const realCount = positions.filter(p=>p.mode==='real').length;
-  const totalCount= positions.length;
+// ---------- render de secciones ----------
+function buildSectionForMode(wallet, mode) {
+  const positions = Array.isArray(wallet?.positions) ? wallet.positions : [];
+  const list = positions.filter(p =>
+    (p?.mode || 'demo') === mode && p?.isOpen !== false && Number(p?.investedUsd || 0) > 0
+  );
 
-  let lines = [];
-  lines.push(`**${EMO.header} Posiciones abiertas**`);
-  lines.push(`• DEMO: ${demoCount}`);
-  lines.push(`• REAL: ${realCount}`);
-  lines.push(`• Total: ${totalCount}`);
+  // balances desde la API; si faltara, fallback para DEMO
+  const bal = (wallet?.balances && wallet.balances[mode]) ? wallet.balances[mode] : null;
+  let invested = Number(bal?.investedUsd ?? 0);
+  let cash     = Number(bal?.cashUsd     ?? 0);
+  if (!bal && mode === 'demo') {
+    const invSum = list.reduce((a, p) => a + Number(p?.investedUsd || 0), 0);
+    invested = invSum;
+    cash = Math.max(0, 10_000 - invSum);
+  }
+  const total = invested + cash;
 
-  // Wallet del modo activo
-  if (activeMode === 'real') {
-    const addr = st?.real?.address ? String(st.real.address) : '—';
-    const inv  = fmtUsd(positions.filter(p=>p.mode==='real').reduce((a,p)=>a+Number(p.investedUsd||0),0));
-    const free = '—';
-    const tot  = '—';
-    lines.push(`\n**${EMO.real} Billetera Phantom (REAL)**`);
-    lines.push(`• Address: ${addr}`);
-    lines.push(`• Invertido: ${inv}`);
-    lines.push(`• Libre para sniper: ${free}`);
-    lines.push(`• Total disponible: ${tot}`);
-  } else { // demo
-    const inv  = fmtUsd(positions.filter(p=>p.mode==='demo').reduce((a,p)=>a+Number(p.investedUsd||0),0));
-    const free = fmtUsd(Number(st?.demo?.cash || 0));
-    const tot  = fmtUsd(Number(st?.demo?.cash || 0) + positions.filter(p=>p.mode==='demo').reduce((a,p)=>a+Number(p.investedUsd||0),0));
-    lines.push(`\n**${EMO.demo} Billetera DEMO**`);
-    lines.push(`• Invertido: ${inv}`);
-    lines.push(`• Libre para sniper: ${free}`);
-    lines.push(`• Total disponible: ${tot}`);
+  const lines = [];
+  lines.push(`\n**${mode === 'real' ? EMO.real + ' Billetera Phantom (REAL)' : EMO.demo + ' Billetera DEMO'}**`);
+  lines.push(`• Invertido: ${fmtUsd(invested)}`);
+  lines.push(`• Libre para sniper: ${fmtUsd(cash)}`);
+  lines.push(`• Total disponible: ${fmtUsd(total)}`);
+
+  if (list.length === 0) {
+    lines.push(`\n( Sin posiciones ${mode.toUpperCase()} )`);
+    return lines.join('\n');
   }
 
-  lines.push(`\n*Modo activo: ${activeMode.toUpperCase()}*`);
+  // Header del modo: si API.header se corresponde con el primer símbolo, úsalo; sino, arma uno local con pnl de esa pos
+  const pos0 = list[0];
+  const headerPnlText = (wallet?.header?.pnlText && wallet?.header?.symbol && wallet.header.symbol === pos0.symbol)
+    ? wallet.header.pnlText
+    : (() => {
+        const u = Number(pos0?.pnlUsd || 0);
+        const p = Number(pos0?.pnlPct || 0);
+        const sign = u >= 0 ? '+' : '-';
+        // quitamos el '$' de fmtUsd para escribir +$1,234.56
+        return `${sign}${fmtUsd(Math.abs(u)).replace('$','') } (${fmtPct(p)})`;
+      })();
 
-  // Listado de posiciones del modo activo
-  const list = positions.filter(p=>p.mode===activeMode).slice(0, MAX_POS);
-  for (const pos of list){
-    const price = prices.get(pos.mint) || 0;
-    const pn    = pnlFor(pos, price);
-    lines.push(`\n${EMO.token} $${safeSymbol(pos.symbol)} **(${pos.mode.toUpperCase()})**`);
-    lines.push(`${EMO.entry} Entrada: ${round2(Number(pos.entryPriceUsd||0))}`);
-    lines.push(`${EMO.price} Actual: ${round2(price)}`);
-    lines.push(`${EMO.invest} Invertido: ${fmtUsd(pos.investedUsd||0)}`);
-    lines.push(`${EMO.pnl} PnL: ${pn.pct} (${pn.usd})`);
-    lines.push(`${EMO.linkDs} [DexScreener](${dsLink(pos.mint)})  |  ${EMO.linkSc} [Solscan](${scLink(pos.mint)})  |  ${EMO.linkJp} [Jupiter](${jpLink(pos.mint)})  |  ${EMO.linkRd} [Raydium](${rdLink(pos.mint)})`);
-  }
+  lines.push(`\n**${EMO.token} ${safeSymbol(pos0?.symbol)} — PnL: ${headerPnlText}**`);
 
-  // Header de la seleccionada (PnL total).
-  const posSel = list.find(p=>p.id=== (SLOTS.get((global.__HX_LAST_CHATID__))?.selectedId)) || list[0];
-  if (posSel){
-    const price = prices.get(posSel.mint) || 0;
-    const pn    = pnlNums(posSel, price);
-    const sign  = pn.usd>=0?'+':'-';
-    lines.unshift(`**${EMO.token} ${safeSymbol(posSel.symbol)} — PnL: ${sign}$${Math.abs(pn.usd).toFixed(2)} (${pn.pct>=0?'+':''}${pn.pct.toFixed(1)}%)**`);
+  for (const pos of list) {
+    const entry = Number(pos?.entryPriceUsd || 0);
+    const now   = Number(pos?.priceNowUsd   || 0);
+    const inv   = Number(pos?.investedUsd   || 0);
+    const u     = Number(pos?.pnlUsd        || 0);
+    const p     = Number(pos?.pnlPct        || 0);
+
+    lines.push(`\n${EMO.token} $${safeSymbol(pos?.symbol)} **(${mode.toUpperCase()})**`);
+    lines.push(`${EMO.entry} Entrada: ${entry ? entry.toFixed(4) : '—'}`);
+    lines.push(`${EMO.price} Actual: ${now   ? now.toFixed(4)   : '—'}`);
+    lines.push(`${EMO.invest} Invertido: ${fmtUsd(inv)}`);
+    lines.push(`${EMO.pnl} PnL: ${u >= 0 ? '+' : '-'}${fmtUsd(Math.abs(u)).replace('$','')} (${fmtPct(p)})`);
+
+    // Links (usa pos.links si viene de API; si no, derivado por mint)
+    if (pos?.links) {
+      const ds = pos.links.dexscreener || dsLink(pos.mint);
+      const sc = pos.links.solscan     || scLink(pos.mint);
+      const jp = pos.links.jupiter     || jpLink(pos.mint);
+      const rd = pos.links.raydium     || rdLink(pos.mint);
+      lines.push(`${EMO.linkDs} [DexScreener](${ds})  |  ${EMO.linkSc} [Solscan](${sc})  |  ${EMO.linkJp} [Jupiter](${jp})  |  ${EMO.linkRd} [Raydium](${rd})`);
+    } else if (pos?.mint) {
+      lines.push(`${EMO.linkDs} [DexScreener](${dsLink(pos.mint)})  |  ${EMO.linkSc} [Solscan](${scLink(pos.mint)})  |  ${EMO.linkJp} [Jupiter](${jpLink(pos.mint)})  |  ${EMO.linkRd} [Raydium](${rdLink(pos.mint)})`);
+    }
   }
 
   return lines.join('\n');
 }
 
-async function render(bot, chatId, deps, force=false){
-  const slot = SLOTS.get(chatId) || { auto:true };
-  SLOTS.set(chatId, slot);
-  global.__HX_LAST_CHATID__ = chatId;
+function buildTextFromWallet(wallet) {
+  const positions = Array.isArray(wallet?.positions) ? wallet.positions : [];
+  const demoCount = positions.filter(p => (p?.mode || 'demo') === 'demo' && p?.isOpen !== false && Number(p?.investedUsd || 0) > 0).length;
+  const realCount = positions.filter(p => (p?.mode || 'demo') === 'real' && p?.isOpen !== false && Number(p?.investedUsd || 0) > 0).length;
+  const total = demoCount + realCount;
 
-  // breaker anti-deadlock
-  if (slot.busy){
-    if (!slot.busyAt || (Date.now()-slot.busyAt)>8000) {
-      slot.busy=false;
-    } else { return; }
+  const lines = [];
+  lines.push(`${EMO.header} Posiciones abiertas • DEMO: ${demoCount} • REAL: ${realCount} • Total: ${total}`);
+
+  if (wallet?.header?.pnlText) {
+    const sym = wallet.header.symbol ? ` ${safeSymbol(wallet.header.symbol)}` : '';
+    lines.push(`**${EMO.token}${sym} — PnL: ${wallet.header.pnlText}**`);
   }
-  slot.busy   = true;
-  slot.busyAt = Date.now();
 
-  try {
-    const st = loadState();
-    st.positions = st.positions || {};
-    const demoArr = Array.isArray(st.positions.demo) ? st.positions.demo.filter(p=>p.isOpen!==false && Number(p.investedUsd||0)>0) : [];
-    const realArr = Array.isArray(st.positions.real) ? st.positions.real.filter(p=>p.isOpen!==false && Number(p.investedUsd||0)>0) : [];
+  lines.push(buildSectionForMode(wallet, 'demo'));
+  lines.push(buildSectionForMode(wallet, 'real'));
 
-    // ordenar por fecha desc
-    demoArr.sort((a,b)=>Number(b.openedAt||0)-Number(a.openedAt||0));
-    realArr.sort((a,b)=>Number(b.openedAt||0)-Number(a.openedAt||0));
-
-    // init cash demo si falta
-    st.demo = st.demo || {};
-    if (typeof st.demo.cash !== 'number') {
-      const sumInv = demoArr.reduce((a,p)=>a+Number(p.investedUsd||0),0);
-      st.demo.cash = Math.max(0, 10_000 - sumInv);
-      saveState(st);
-    }
-
-    const activeMode = getActiveMode(); // 'demo' o 'real'
-    const positions  = [...demoArr, ...realArr];
-
-    // Precios para los mints usados
-    const mints = Array.from(new Set(positions.map(p=>p.mint))).slice(0, 50);
-    const prices= await fetchPrices(mints);
-
-    // Selección default
-    const visible = positions.filter(p=>p.mode===activeMode);
-    if (!slot.selectedId && visible.length>0) slot.selectedId = visible[0].id;
-
-    // Texto + keyboard
-    const text = renderText(activeMode, positions, prices, st);
-    const kb   = buildKeyboard(visible, slot, prices);
-    const h    = hashPayload(text, kb, slot.selectedId, slot.auto);
-
-    if (!slot.msgId){
-      const sent = await bot.sendMessage(chatId, text, {
-        reply_markup: kb,
-        parse_mode: 'Markdown',
-        disable_web_page_preview: true
-      });
-      slot.msgId   = sent.message_id;
-      slot.lastHash= h;
-    } else if (force || h !== slot.lastHash){
-      await bot.editMessageText(text, {
-        chat_id: chatId,
-        message_id: slot.msgId,
-        reply_markup: kb,
-        parse_mode: 'Markdown',
-        disable_web_page_preview: true
-      }).catch((e)=>{
-        const m=String(e?.message||e||'');
-        if (!/message is not modified/i.test(m)) console.error('editMessageText:', m);
-      });
-      slot.lastHash = h;
-    }
-
-  } catch (e) {
-    console.error('render /wallet:', e?.message||e);
-  } finally {
-    SLOTS.set(chatId, { ...SLOTS.get(chatId), busy:false, busyAt:0 });
-  }
+  return lines.join('\n');
 }
 
-export default function registerWallet(bot, deps){
-  // /wallet
-  bot.onText(/^\/wallet(?:@[\w_]+)?$/, async (msg)=>{
-    const chatId = msg.chat.id;
-    SLOTS.set(chatId, SLOTS.get(chatId) || { auto:true });
-    // primer render
-    await render(bot, chatId, deps, true);
-    // auto-refresh
-    const slot = SLOTS.get(chatId);
-    clearInterval(slot.timer);
-    if (slot.auto){
-      slot.timer = setInterval(()=>render(bot, chatId, deps, false), REFRESH_MS);
-    }
-  });
+// ---------- registro del comando (compatible con node-telegram-bot-api y Telegraf) ----------
+export default function register(bot) {
+  // node-telegram-bot-api
+  if (typeof bot.onText === 'function') {
+    bot.onText(/^\/wallet(?:@[\w_]+)?(?:\s+.*)?$/, async (msg) => {
+      const chatId = msg.chat.id;
+      try {
+        const walletDemo = await getWalletFromApi('demo').catch(()=>null);
+        const walletReal = await getWalletFromApi('real').catch(()=>null);
 
-  // callbacks locales (selección/refresh/auto). Las ventas las maneja wallet_sell.js
-  bot.on('callback_query', async (q)=>{
-    const data  = String(q?.data||'');
-    const chatId= q?.message?.chat?.id;
-    if (!chatId || !data) return;
-    const slot = SLOTS.get(chatId) || { auto:true };
-    SLOTS.set(chatId, slot);
+        const merged = (() => {
+          const w = walletDemo || walletReal;
+          if (!w) return { positions: [], balances: { demo:{investedUsd:0,cashUsd:0,totalUsd:0}, real:{investedUsd:0,cashUsd:0,totalUsd:0} } };
+          const demoPos = walletDemo?.positions || [];
+          const realPos = walletReal?.positions || [];
+          return {
+            ...w,
+            positions: [...demoPos, ...realPos],
+            balances: {
+              demo: walletDemo?.balances?.demo || { investedUsd: 0, cashUsd: 0, totalUsd: 0 },
+              real: walletReal?.balances?.real || { investedUsd: 0, cashUsd: 0, totalUsd: 0 },
+            },
+            header: walletDemo?.header || walletReal?.header || null,
+          };
+        })();
 
-    if (data.startsWith('w:sel:')){
-      const id = data.split(':')[2];
-      slot.selectedId = id;
-      try{ await bot.answerCallbackQuery(q.id, { text: 'Seleccionado' }); } catch {}
-      await render(bot, chatId, {}, true);
-      return;
-    }
-
-    if (data==='w:refresh'){
-      try{ await bot.answerCallbackQuery(q.id, { text: 'Refrescando…' }); } catch {}
-      await render(bot, chatId, {}, true);
-      return;
-    }
-
-    if (data==='w:auto'){
-      slot.auto = !slot.auto;
-      clearInterval(slot.timer);
-      if (slot.auto){
-        slot.timer = setInterval(()=>render(bot, chatId, {}, false), REFRESH_MS);
+        const text = buildTextFromWallet(merged);
+        await bot.sendMessage(chatId, text, { parse_mode: 'Markdown', disable_web_page_preview: true });
+      } catch (e) {
+        console.error('wallet command:', e);
+        await bot.sendMessage(chatId, '⚠️ Error mostrando la wallet.', { parse_mode: 'Markdown' });
       }
-      try{ await bot.answerCallbackQuery(q.id, { text: `Auto: ${slot.auto?'ON':'OFF'}` }); } catch {}
-      await render(bot, chatId, {}, true);
-      return;
-    }
+    });
+    return;
+  }
 
-    // otros callbacks (sell:...) los maneja wallet_sell.js
-  });
+  // Telegraf (fallback)
+  if (typeof bot.command === 'function') {
+    bot.command('wallet', async (ctx) => {
+      try {
+        const walletDemo = await getWalletFromApi('demo').catch(()=>null);
+        const walletReal = await getWalletFromApi('real').catch(()=>null);
+
+        const merged = (() => {
+          const w = walletDemo || walletReal;
+          if (!w) return { positions: [], balances: { demo:{investedUsd:0,cashUsd:0,totalUsd:0}, real:{investedUsd:0,cashUsd:0,totalUsd:0} } };
+          const demoPos = walletDemo?.positions || [];
+          const realPos = walletReal?.positions || [];
+          return {
+            ...w,
+            positions: [...demoPos, ...realPos],
+            balances: {
+              demo: walletDemo?.balances?.demo || { investedUsd: 0, cashUsd: 0, totalUsd: 0 },
+              real: walletReal?.balances?.real || { investedUsd: 0, cashUsd: 0, totalUsd: 0 },
+            },
+            header: walletDemo?.header || walletReal?.header || null,
+          };
+        })();
+
+        const text = buildTextFromWallet(merged);
+        await ctx.reply(text, { parse_mode: 'Markdown', disable_web_page_preview: true });
+      } catch (e) {
+        console.error('wallet command:', e);
+        await ctx.reply('⚠️ Error mostrando la wallet.', { parse_mode: 'Markdown' });
+      }
+    });
+    return;
+  }
+
+  console.warn('wallet: interfaz de bot desconocida (no hay onText ni command)');
 }
