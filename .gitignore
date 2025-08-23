@@ -39,3 +39,8 @@ secrets/
 # Runtime local
 /data/
 *.pid
+
+# Backups locales
+*.bak_*
+*.bad_*
+*.bak

@@ -1,9 +1,17 @@
 {
   "name": "HunterX_Backend_Stable",
   "version": "1.0.0",
+  "private": true,
   "type": "module",
+  "engines": {
+    "node": ">=20.0.0"
+  },
   "scripts": {
-    "start": "node bot.js",
+    "start": "node index.js",
+    "dev": "node --watch index.js",
+    "start:staging": "NODE_ENV=staging node index.js",
+    "start:prod": "NODE_ENV=production node index.js",
+    "health": "node -e \"fetch('http://127.0.0.1:'+(process.env.API_PORT||3000)+'/api/salud').then(r=>r.json()).then(j=>console.log(JSON.stringify(j,null,2))).catch(e=>{console.error(e);process.exitCode=1;})\"",
     "worker": "node src/worker.js",
     "test:supabase": "node scripts/testSupabase.js",
     "test:solana": "node scripts/testSolana.js",

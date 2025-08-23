@@ -1,3 +1,34 @@
+/* =====================================================================
+   HUNTER X — autoSniper.js
+   Build Tag: HX-A12 (Anti-FOMO) — v2025-08-19
+   Autor: Hunter X (privado)
+   ---------------------------------------------------------------------
+   SECCIONES (mapa mental del archivo)
+     [1] Boot & ENV Guard (imports, ENV y defaults)
+     [2] DataRouter (DexScreener/Birdeye/Solscan) + Consistencia
+     [3] RiskEngine (reglas por perfil, on-chain opcional, momentum/edad)
+     [4] RouteEngine (pre-sim Jupiter / Raydium, minOut, impacto)
+     [5] Execution / ExecutionSim (DEMO vs REAL/Phantom)
+     [6] Accounting (stores, PnL, budgets, cooldown, invariantes)
+     [7] Orchestrator (loop de escaneo + entradas probe/full + exits)
+     [8] Control & Health (/autosniper on|off|status, anti-reentrancia)
+   ---------------------------------------------------------------------
+   INVARIANTES DE CONTABILIDAD (deben cumplirse siempre)
+     • cash + invested = total   (tolerancia ±0.01)
+     • sin valores negativos en DEMO/REAL
+     • ∑ investedUsd de posiciones abiertas = invested
+   SEMÁFOROS (Go/No-Go rápido)
+     • p95 feeds < 1200 ms, errores < 2%
+     • /wallet coincide con contabilidad (DEM0/REAL)
+     • /autosniper status operativo (ON/OFF, modo, ladder, perfil)
+   CHECKLIST (operativo)
+     [ ] /autosniper status OK (HTML)
+     [ ] /health OK (latencias y errores en verde)
+     [ ] /wallet OK (invariantes)
+   NOTAS
+     • Este header y banners son 100% no funcionales (sólo comentarios).
+     • No cambia lógica. Sólo organización y trazabilidad.
+===================================================================== */
 // - Doble/Triple validación (DexScreener + Birdeye + Solscan*)
 // - Cheques on-chain duros* (mint/freeze/upgrade/LP)  (*si tus servicios lo soportan)
 // - Pre-sim Jupiter (quote) para estimar impacto real antes de comprar
@@ -529,7 +560,9 @@ async function loopForUser(bot, uid, { phantomClient }) {
 
   // 1) tomar modo actual
   const mode = bot.realMode?.[uid] ? 'REAL' : 'DEMO';
-  const baseUsd = mode === 'REAL' ? ENV.BASE_REAL : ENV.BASE_DEMO;
+  // usa override si existe; si no, cae a ENV
+  const ubm = bot._userBaseMap || { DEMO: {}, REAL: {} };
+  const baseUsd = Number(ubm[mode]?.[uid]) || (mode === 'REAL' ? ENV.BASE_REAL : ENV.BASE_DEMO);
 
   // 2) budgets / cooldown
   const risk = getRisk(bot, uid);
@@ -760,3 +793,16 @@ export default function registerAutoSniper(bot, { phantomClient } = {}) {
     bot.sendMessage(msg.chat.id, '<b>🛑 Sniper OFF</b>', { parse_mode:'HTML' });
   });
 }
+
+/* =====================================================================
+   FOOTER — Checklist Operativo (copiar a Notion si querés)
+   ---------------------------------------------------------------------
+   [ ] /autosniper status muestra: ON/OFF, DEMO/REAL, perfil, franja, bases, ladder JSON
+   [ ] /health con p95<1200ms y errores<2% (fuentes DS/BE/SS; degradación elegante si falta una)
+   [ ] /wallet respeta invariantes: cash+invested=total ±0.01, sin negativos, ∑pos=open==invested
+   [ ] DEMO: prueba rápida de probe→(posible) scale-up y giveback ladder en retrocesos
+   [ ] REAL (cuando corresponda): downscale por USDC si falta balance y logs de exec
+   ---------------------------------------------------------------------
+   Cambios HX-A12 documentados: RiskEngine [momentum+edad], pre-sim Jupiter, ladder exacta,
+   budgets/cooldown, anti-reentrancia, abortables y stores por usuario/modo.
+===================================================================== */

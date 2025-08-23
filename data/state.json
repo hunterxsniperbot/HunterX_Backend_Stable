@@ -8,23 +8,82 @@
   "positions": {
     "demo": [
       {
-        "id": "demo-1755476977022",
+        "id": "demo-1755485799925",
         "mint": "So11111111111111111111111111111111111111112",
         "symbol": "SOLBOMB",
         "mode": "demo",
         "entryPriceUsd": 0.0032,
         "priceNowUsd": 0.016,
-        "investedUsd": 750,
-        "openedAt": 1755476977022,
-        "isOpen": true
+        "investedUsd": 0,
+        "openedAt": 1755485799925,
+        "isOpen": false,
+        "status": "closed",
+        "closedAt": 1755950706164
+      },
+      {
+        "id": "demo-1755485985719",
+        "mint": "So11111111111111111111111111111111111111112",
+        "symbol": "SOLBOMB",
+        "entryPriceUsd": 184.091,
+        "investedUsd": 0,
+        "openedAt": 1755485985719,
+        "mode": "demo",
+        "isOpen": false,
+        "status": "closed",
+        "partialCount": 1,
+        "closedAt": 1755950704473
+      },
+      {
+        "id": "demo-1755485991594",
+        "mint": "So11111111111111111111111111111111111111112",
+        "symbol": "SOLBOMB",
+        "entryPriceUsd": 184.091,
+        "investedUsd": 0.43,
+        "openedAt": 1755485991594,
+        "mode": "demo",
+        "isOpen": false,
+        "status": "closed",
+        "partialCount": 7,
+        "closedAt": 1755913148322
+      },
+      {
+        "id": "demo-1755486012906",
+        "mint": "So11111111111111111111111111111111111111112",
+        "symbol": "SOLBOMB",
+        "entryPriceUsd": 184.091,
+        "investedUsd": 0.97,
+        "openedAt": 1755486012906,
+        "mode": "demo",
+        "isOpen": false,
+        "status": "closed",
+        "partialCount": 6,
+        "closedAt": 1755913109923
+      },
+      {
+        "id": "demo-1755486013158",
+        "mint": "So11111111111111111111111111111111111111112",
+        "symbol": "SOLBOMB",
+        "entryPriceUsd": 184.091,
+        "investedUsd": 0,
+        "openedAt": 1755486013158,
+        "mode": "demo",
+        "isOpen": false,
+        "status": "closed",
+        "partialCount": 6,
+        "closedAt": 1755486095838
       }
     ],
     "real": []
   },
   "demo": {
-    "cash": 9250
+    "cash": 10110.22
   },
   "real": {
     "cash": 0
+  },
+  "userCfg": {
+    "7996740495": {
+      "baseDemo": 2000
+    }
   }
 }
