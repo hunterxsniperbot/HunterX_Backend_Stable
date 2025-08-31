@@ -1,53 +1,37 @@
-// src/services/demoBank.js — banco DEMO simple por usuario (persiste en .demo_bank.json)
-import fs from 'fs';
-import path from 'path';
+let cash = 1000;               // saldo inicial DEMO en USD
+let positions = [];            // [{ token, qty, priceIn, amountUsd, ts }]
+let closed = [];               // [{ token, pnlUsd, reason, ts }]
+const now = ()=> new Date().toISOString();
 
-const FILE = path.resolve('.demo_bank.json');
-
-function readAll() {
-  try {
-    const raw = fs.readFileSync(FILE, 'utf8');
-    const data = JSON.parse(raw);
-    return (data && typeof data === 'object') ? data : {};
-  } catch { return {}; }
-}
-function writeAll(obj) {
-  try {
-    fs.writeFileSync(FILE, JSON.stringify(obj, null, 2));
-    return true;
-  } catch { return false; }
-}
-function toUsd(n) {
-  const v = Number(n);
-  return Number.isFinite(v) ? Math.max(0, Number(v.toFixed(2))) : 0;
+export function getState(){
+  const invested = positions.reduce((a,p)=> a + p.amountUsd, 0);
+  const total = cash + invested;
+  return { cash, invested, total, positions, closed };
 }
 
-export function get(uid) {
-  const all = readAll();
-  const start = toUsd(process.env.DEMO_START_USD || 0);
-  if (!(uid in all)) {
-    all[uid] = { cashUsd: start, updatedAt: new Date().toISOString() };
-    writeAll(all);
+export function resetDemoBank(usdc = 1000){
+  cash = usdc; positions = []; closed = [];
+}
+
+export function buyDemo({ token='SOL', amountUsd=20, priceUsd=100 }={}){
+  if (amountUsd <= 0) throw new Error('amountUsd inválido');
+  if (cash < amountUsd) throw new Error('Saldo insuficiente DEMO');
+  const qty = amountUsd / priceUsd;
+  cash -= amountUsd;
+  const pos = { token, qty, priceIn: priceUsd, amountUsd, ts: now() };
+  positions.push(pos);
+  return pos;
+}
+
+export function sellAllDemo({ token, priceUsd, reason='manual' }){
+  const keep = []; let realized = 0;
+  for (const p of positions){
+    if (p.token !== token){ keep.push(p); continue; }
+    const pnl = (priceUsd - p.priceIn) * p.qty; // USD
+    realized += pnl + p.amountUsd;              // recupera principal + pnl
+    closed.push({ token, pnlUsd: pnl, reason, ts: now() });
   }
-  return toUsd(all[uid].cashUsd);
+  positions = keep;
+  cash += realized;
+  return { realizedUsd: realized };
 }
-export function set(uid, usd) {
-  const all = readAll();
-  all[uid] = { cashUsd: toUsd(usd), updatedAt: new Date().toISOString() };
-  writeAll(all);
-  return get(uid);
-}
-export function add(uid, deltaUsd) {
-  const cur = get(uid);
-  return set(uid, cur + toUsd(deltaUsd));
-}
-export function sub(uid, deltaUsd) {
-  const cur = get(uid);
-  const next = Math.max(0, cur - toUsd(deltaUsd));
-  return set(uid, next);
-}
-export function reset(uid, to = null) {
-  const base = toUsd(to == null ? (process.env.DEMO_START_USD || 0) : to);
-  return set(uid, base);
-}
-export default { get, set, add, sub, reset };

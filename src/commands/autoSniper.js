@@ -5,7 +5,7 @@
    ---------------------------------------------------------------------
    SECCIONES (mapa mental del archivo)
      [1] Boot & ENV Guard (imports, ENV y defaults)
-     [2] DataRouter (DexScreener/Birdeye/Solscan) + Consistencia
+     [2] DataRouter (DexScreener/Birdeye) + Consistencia
      [3] RiskEngine (reglas por perfil, on-chain opcional, momentum/edad)
      [4] RouteEngine (pre-sim Jupiter / Raydium, minOut, impacto)
      [5] Execution / ExecutionSim (DEMO vs REAL/Phantom)
@@ -23,13 +23,13 @@
      • /autosniper status operativo (ON/OFF, modo, ladder, perfil)
    CHECKLIST (operativo)
      [ ] /autosniper status OK (HTML)
-     [ ] /health OK (latencias y errores en verde)
+     [ ] /salud OK (latencias y errores en verde)
      [ ] /wallet OK (invariantes)
    NOTAS
      • Este header y banners son 100% no funcionales (sólo comentarios).
      • No cambia lógica. Sólo organización y trazabilidad.
 ===================================================================== */
-// - Doble/Triple validación (DexScreener + Birdeye + Solscan*)
+// - Doble validación (DexScreener + Birdeye)
 // - Cheques on-chain duros* (mint/freeze/upgrade/LP)  (*si tus servicios lo soportan)
 // - Pre-sim Jupiter (quote) para estimar impacto real antes de comprar
 // - Auto-tuning leve por franja prioritaria
