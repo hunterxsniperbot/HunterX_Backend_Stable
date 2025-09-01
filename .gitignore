@@ -44,3 +44,4 @@ secrets/
 *.bak_*
 *.bad_*
 *.bak
+var/

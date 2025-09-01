@@ -4,21 +4,6 @@ import { getSheets } from '../services/sheetsClient.js';
 
 function fmt(n, d=6){ return Number(n).toFixed(d); }
 
-// Crea la pestaña si no existe
-async function ensureSheetTab(sheets, spreadsheetId, title){
-  const meta = await sheets.spreadsheets.get({
-    spreadsheetId,
-    fields: 'sheets.properties.title'
-  });
-  const exists = (meta.data.sheets||[]).some(s => s.properties?.title === title);
-  if (!exists){
-    await sheets.spreadsheets.batchUpdate({
-      spreadsheetId,
-      requestBody: { requests: [{ addSheet: { properties: { title } } }] }
-    });
-  }
-}
-
 export default function(bot){
   console.log('✅ DEMO: registrando /demo_reset /demo_buy /demo_state /demo_sell /registro_export');
 
@@ -98,7 +83,7 @@ ${linesPos.length ? linesPos.join('\n') : '— sin posiciones —'}`;
     }
   });
 
-  // /registro_export → escribe filas en "Registros" (crea la pestaña si no existe)
+  // /registro_export  → agrega filas a la hoja "Registros"
   bot.onText(/^\/registro_export$/i, async (msg) => {
     const chatId = msg.chat.id;
     try{
@@ -122,7 +107,7 @@ ${linesPos.length ? linesPos.join('\n') : '— sin posiciones —'}`;
       ]));
 
       const sheets = getSheets();
-      await ensureSheetTab(sheets, SHEET_ID, 'Registros');   // ← asegura la pestaña
+    await ensureSheetTab(sheets, SHEET_ID, 'Registros');
       await sheets.spreadsheets.values.append({
         spreadsheetId: SHEET_ID,
         range: 'Registros!A1',

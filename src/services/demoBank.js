@@ -1,6 +1,6 @@
 let cash = 1000;               // saldo inicial DEMO en USD
 let positions = [];            // [{ token, qty, priceIn, amountUsd, ts }]
-let closed = [];               // [{ token, pnlUsd, reason, ts }]
+let closed = [];               // [{ token, qty, priceIn, priceOut, amountUsd, pnlUsd, reason, ts }]
 const now = ()=> new Date().toISOString();
 
 export function getState(){
@@ -28,8 +28,18 @@ export function sellAllDemo({ token, priceUsd, reason='manual' }){
   for (const p of positions){
     if (p.token !== token){ keep.push(p); continue; }
     const pnl = (priceUsd - p.priceIn) * p.qty; // USD
-    realized += pnl + p.amountUsd;              // recupera principal + pnl
-    closed.push({ token, pnlUsd: pnl, reason, ts: now() });
+    const item = {
+      token: p.token,
+      qty: p.qty,
+      priceIn: p.priceIn,
+      priceOut: priceUsd,
+      amountUsd: p.amountUsd,
+      pnlUsd: pnl,
+      reason,
+      ts: now(),
+    };
+    closed.push(item);
+    realized += (p.amountUsd + pnl); // recupera principal + pnl
   }
   positions = keep;
   cash += realized;

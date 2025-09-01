@@ -1,4 +1,3 @@
-import './server.js';
 // index.js — Entry point HunterX (ESM, robusto)
 // 1) ENV + sane defaults
 import "dotenv/config";
@@ -135,4 +134,3 @@ if (!TOKEN) {
 }
 
 // Fin: si sólo querés API (sin token), ya quedó arriba con /api/salud
-
