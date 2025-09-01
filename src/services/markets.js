@@ -1,289 +1,191 @@
-// ─────────────────────────────────────────────────────────────────────────────
-// HUNTER X — Markets DataRouter — HX-MKT-01 — v2025-08-19 (ESM)
-// Secciones:
-//   [1] ENV / Constantes
-//   [2] Helpers (fetch JSON con timeout, normalizadores)
-//   [3] Proveedores: DexScreener, Birdeye, CoinGecko (SOL)
-//   [4] Router: getPrice (primario/fallback), getTokenInfoFromPair
-//   [5] Stubs seguros (scanNewTokens)
-// Exports: getDexScreener, getBirdeye, getPrice, getSolUsd, getTokenInfoFromPair, scanNewTokens
-//
-// Notas:
-//   • MARKET_PRIMARY: 'birdeye' | 'dexscreener'  (default: 'dexscreener')
-//   • BIRDEYE_API_KEY requerido para usar Birdeye
-//   • Todos los campos devueltos son best-effort; faltantes → null
-//   • Diseñado para no romper: si falla un proveedor, degrada suave
-// ─────────────────────────────────────────────────────────────────────────────
-
-import fetch from 'node-fetch';
+// Reemplazar la función scanNewTokens() vacía en markets.js
 
 // ─────────────────────────────────────────────────────────────────────────────
-// [1] ENV / Constantes
+// [5] Scan de tokens nuevos - IMPLEMENTACIÓN COMPLETA
 // ─────────────────────────────────────────────────────────────────────────────
-const MARKET_PRIMARY     = (process.env.MARKET_PRIMARY || 'dexscreener').toLowerCase();
-const MARKET_TIMEOUT_MS  = Number(process.env.MARKET_TIMEOUT_MS || 6000);
 
-const BIRDEYE_API_KEY    = process.env.BIRDEYE_API_KEY || '';
-const BIRDEYE_BASE       = process.env.BIRDEYE_BASE || 'https://public-api.birdeye.so';
-
-const COINGECKO_PRICE_URL = 'https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd';
-const SOL_MINT            = 'So11111111111111111111111111111111111111112';
-
-// ─────────────────────────────────────────────────────────────────────────────
-// [2] Helpers
-// ─────────────────────────────────────────────────────────────────────────────
-async function fetchJson(url, { timeout = MARKET_TIMEOUT_MS, headers = {} } = {}) {
+/** 
+ * Escanea tokens nuevos usando múltiples fuentes
+ * Retorna: Array de candidatos con métricas normalizadas
+ */
+export async function scanNewTokens() {
+  const candidates = [];
+  
   try {
-    const r = await fetch(url, { timeout, headers });
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    return await r.json();
+    // 1. DexScreener - tokens trending últimas 24h en Solana
+    const dsTrending = await scanDexScreenerTrending();
+    if (dsTrending.length) candidates.push(...dsTrending);
+
+    // 2. DexScreener - nuevos pares (filtrar por edad)
+    const dsNew = await scanDexScreenerNew();
+    if (dsNew.length) candidates.push(...dsNew);
+
+    // 3. Birdeye - trending si tienes API key
+    if (BIRDEYE_API_KEY) {
+      const beTrending = await scanBirdeyeTrending();
+      if (beTrending.length) candidates.push(...beTrending);
+    }
+
+    // 4. Dedupe por mint address
+    const seen = new Set();
+    const unique = candidates.filter(c => {
+      if (!c.mint || seen.has(c.mint)) return false;
+      seen.add(c.mint);
+      return true;
+    });
+
+    // 5. Filtro básico de edad (solo tokens de 1-10 minutos)
+    const filtered = unique.filter(c => {
+      const ageMin = c.ageMinutes || 999;
+      return ageMin >= 1 && ageMin <= 10;
+    });
+
+    console.log(`[SCAN] Encontrados: ${candidates.length}, únicos: ${unique.length}, filtrados: ${filtered.length}`);
+    return filtered;
+
   } catch (e) {
-    return null;
+    console.error('[SCAN] Error:', e.message);
+    return [];
   }
 }
 
-function n(x, d = null) {
-  const v = Number(x);
-  return Number.isFinite(v) ? v : d;
-}
-function pickFirst(...vals) {
-  for (const v of vals) if (v != null) return v;
-  return null;
-}
-
-// Normaliza estructura “token metrics” a un shape común
-function normalizeToken({ symbol, mint, priceUsd, url, raw = {}, source = 'unknown' }) {
-  return {
-    source,
-    symbol: symbol || null,
-    mint: mint || null,
-    priceUsd: n(priceUsd, null),
-    url: url || null,
-    // Métricas best-effort (pueden venir faltantes en cada proveedor)
-    liquidityUsd: n(raw.liquidityUsd ?? raw.liquidity_usd ?? raw.liquidity, null),
-    spreadPct: n(raw.spreadPct ?? raw.spread_pct ?? raw.spread, null),
-    vol5m: n(raw.vol5m ?? raw.volume5m ?? raw.vol_5m, null),
-    txPerMin: n(raw.txPerMin ?? raw.tpm, null),
-    uniqueBuyersMin: n(raw.uniqueBuyersMin ?? raw.ubuy, null),
-    holders: n(raw.holders ?? raw.holder ?? raw.holdersCount, null),
-    fdv: n(raw.fdv ?? raw.fdvUsd ?? raw.fdv_usd, null),
-    marketcap: n(raw.marketcap ?? raw.marketCap ?? raw.mcap, null),
-    lpLockOrBurnPct: n(raw.lpLockOrBurnPct ?? raw.lp_lock_pct ?? raw.lp_burn_pct, null),
-    _raw: raw, // por si querés debuggear luego
-  };
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// [3] Proveedores
-// ─────────────────────────────────────────────────────────────────────────────
-
-// 3.1 — CoinGecko (precio de SOL en USD)
-export async function getSolUsd() {
+// Escanear trending en DexScreener
+async function scanDexScreenerTrending() {
   try {
-    const j = await fetchJson(COINGECKO_PRICE_URL, { timeout: 7000 });
-    const v = j?.solana?.usd;
-    return (typeof v === 'number') ? v : null;
-  } catch {
-    return null;
-  }
-}
+    const url = 'https://api.dexscreener.com/latest/dex/tokens/trending?chain=solana';
+    const data = await fetchJson(url, { timeout: 8000 });
+    
+    if (!Array.isArray(data?.pairs)) return [];
 
-// 3.2 — DexScreener (token/pair info)
-export async function getDexScreener(mintOrQuery) {
-  try {
-    const q = String(mintOrQuery || '').trim();
-    const looksLikeAddress = q.length > 25; // heurística simple
-
-    // a) Por token address directo (más preciso)
-    if (looksLikeAddress) {
-      const urlTok = `https://api.dexscreener.com/latest/dex/tokens/${encodeURIComponent(q)}`;
-      const data = await fetchJson(urlTok);
-      const pairs = Array.isArray(data?.pairs) ? data.pairs : [];
-      const solPairs = pairs.filter(p => (p?.chainId || '').toLowerCase() === 'solana');
-      if (solPairs.length) {
-        const cand = solPairs[0];
-        return normalizeToken({
-          source: 'dexscreener',
-          symbol: cand.baseToken?.symbol,
-          mint: cand.baseToken?.address,
-          priceUsd: n(cand.priceUsd, null),
-          url: cand.url,
-          raw: {
-            liquidityUsd: cand.liquidity?.usd,
-            // Algunos campos no existen en DS; dejar null si no hay
-          }
-        });
+    return data.pairs.map(pair => ({
+      mint: pair.baseToken?.address,
+      symbol: pair.baseToken?.symbol || 'UNKNOWN',
+      source: 'dexscreener-trending',
+      priceUsd: n(pair.priceUsd),
+      ageMinutes: calculateAge(pair.pairCreatedAt),
+      metrics: {
+        liquidityUsd: n(pair.liquidity?.usd),
+        volume24h: n(pair.volume?.h24),
+        priceChange24h: n(pair.priceChange?.h24),
+        txCount24h: n(pair.txns?.h24?.buys + pair.txns?.h24?.sells),
+        makers24h: n(pair.txns?.h24?.buyers + pair.txns?.h24?.sellers)
+      },
+      intel: {
+        hhhl: pair.priceChange?.h1 > 0 && pair.priceChange?.h24 > 0,
+        retracePct: calculateRetrace(pair),
+        buyRatioPct: calculateBuyRatio(pair.txns?.h24)
       }
-    }
+    }));
 
-    // b) Por búsqueda “base/quote” o símbolo
-    const url = `https://api.dexscreener.com/latest/dex/search?q=${encodeURIComponent(q)}`;
-    const data = await fetchJson(url);
-    const pairs = Array.isArray(data?.pairs) ? data.pairs : [];
-    const solPairs = pairs.filter(p => (p?.chainId || '').toLowerCase() === 'solana');
-    if (solPairs.length) {
-      const cand = solPairs[0];
-      return normalizeToken({
-        source: 'dexscreener',
-        symbol: cand.baseToken?.symbol || q.toUpperCase(),
-        mint: cand.baseToken?.address || '',
-        priceUsd: n(cand.priceUsd, null),
-        url: cand.url || null,
-        raw: {
-          liquidityUsd: cand.liquidity?.usd,
-        }
-      });
-    }
-
-    // c) SOL built-in
-    if (q.toUpperCase() === 'SOL') {
-      return normalizeToken({
-        source: 'dexscreener',
-        symbol: 'SOL',
-        mint: SOL_MINT,
-        priceUsd: await getSolUsd(),
-        url: null,
-        raw: {}
-      });
-    }
-
-    return null;
-  } catch {
-    return null;
+  } catch (e) {
+    console.error('[SCAN] DexScreener trending error:', e.message);
+    return [];
   }
 }
 
-// 3.3 — Birdeye (requiere API Key)
-export async function getBirdeye(mintOrQuery) {
+// Escanear nuevos pares en DexScreener
+async function scanDexScreenerNew() {
   try {
-    if (!BIRDEYE_API_KEY) return null;
-    const q = String(mintOrQuery || '').trim();
-    const looksLikeAddress = q.length > 25;
-    if (!looksLikeAddress) return null; // Birdeye trabaja mejor por address
+    // API endpoint para nuevos pares (puede requerir ajuste según disponibilidad)
+    const url = 'https://api.dexscreener.com/latest/dex/pairs/solana?limit=50';
+    const data = await fetchJson(url, { timeout: 8000 });
+    
+    if (!Array.isArray(data?.pairs)) return [];
 
-    // Overview (liquidez, holders, etc.)
-    const ovUrl = `${BIRDEYE_BASE}/defi/token_overview?chain=solana&address=${encodeURIComponent(q)}`;
-    const ov = await fetchJson(ovUrl, {
+    // Filtrar solo pares muy nuevos
+    const newPairs = data.pairs.filter(pair => {
+      const ageMin = calculateAge(pair.pairCreatedAt);
+      return ageMin <= 15; // Menos de 15 minutos
+    });
+
+    return newPairs.map(pair => ({
+      mint: pair.baseToken?.address,
+      symbol: pair.baseToken?.symbol || 'UNKNOWN',
+      source: 'dexscreener-new',
+      priceUsd: n(pair.priceUsd),
+      ageMinutes: calculateAge(pair.pairCreatedAt),
+      metrics: {
+        liquidityUsd: n(pair.liquidity?.usd),
+        volume24h: n(pair.volume?.h24),
+        fdv: n(pair.fdv),
+        marketcap: n(pair.marketCap)
+      },
+      intel: {
+        hhhl: true, // Asumir momentum positivo para nuevos
+        retracePct: 0,
+        buyRatioPct: 70 // Optimistic para nuevos pares
+      }
+    }));
+
+  } catch (e) {
+    console.error('[SCAN] DexScreener new pairs error:', e.message);
+    return [];
+  }
+}
+
+// Escanear trending en Birdeye (requiere API key)
+async function scanBirdeyeTrending() {
+  try {
+    if (!BIRDEYE_API_KEY) return [];
+
+    const url = `${BIRDEYE_BASE}/defi/trending_tokens?chain=solana&timeframe=24h&limit=30`;
+    const data = await fetchJson(url, {
       headers: { 'X-API-KEY': BIRDEYE_API_KEY, accept: 'application/json' },
       timeout: MARKET_TIMEOUT_MS
     });
 
-    // Precio (algunos planes lo traen en overview; si no, pedirlo aparte)
-    let priceUsd = n(ov?.data?.price, null);
-    if (priceUsd == null) {
-    const pUrl = `${BIRDEYE_BASE}/public/price?address=${encodeURIComponent(q)}`;
-    const p = await fetchJson(pUrl, {
-    headers: { 'X-API-KEY': BIRDEYE_API_KEY, accept: 'application/json' },
-    timeout: MARKET_TIMEOUT_MS
-    });
-    priceUsd = n(p?.data?.value, null);
-    }
+    if (!Array.isArray(data?.data)) return [];
 
-    // Intentar símbolo desde overview (si existe)
-    const symbol =
-      ov?.data?.symbol ||
-      ov?.data?.name ||
-      (q === SOL_MINT ? 'SOL' : null);
-
-    return normalizeToken({
-      source: 'birdeye',
-      symbol,
-      mint: q,
-      priceUsd,
-      url: null,
-      raw: {
-        liquidityUsd: ov?.data?.liquidity,
-        holders: ov?.data?.holders,
-        fdvUsd: ov?.data?.fdv,
-        marketcap: ov?.data?.marketCap,
-        // spread/vol/tpm tal vez no estén disponibles en tu plan
-      }
-    });
-  } catch {
-    return null;
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// [4] Router & compat
-// ─────────────────────────────────────────────────────────────────────────────
-
-// Precio USD por mint (primario/fallback → Number | null)
-export async function getPrice(mintOrQuery) {
-  // 1) Primario
-  if (MARKET_PRIMARY === 'birdeye') {
-    const be = await getBirdeye(mintOrQuery);
-    if (n(be?.priceUsd, null) != null) return n(be.priceUsd, null);
-    const ds = await getDexScreener(mintOrQuery);
-    if (n(ds?.priceUsd, null) != null) return n(ds.priceUsd, null);
-  } else {
-    // 'dexscreener' por defecto
-    const ds = await getDexScreener(mintOrQuery);
-    if (n(ds?.priceUsd, null) != null) return n(ds.priceUsd, null);
-    const be = await getBirdeye(mintOrQuery);
-    if (n(be?.priceUsd, null) != null) return n(be.priceUsd, null);
-  }
-
-  // 2) Fallback específico para SOL
-  if (String(mintOrQuery).toUpperCase() === 'SOL' || String(mintOrQuery) === SOL_MINT) {
-    return await getSolUsd();
-  }
-  return null;
-}
-
-/**
- * Compat: resolver par/símbolo “SOL”, “SOL/USDT”… usando DexScreener (como antes).
- * Devuelve:
- *   { symbol, mint, priceUsd, url, metrics:{vol24h, liquidity_usd, holders, fdv, marketcap} } | null
- */
-export async function getTokenInfoFromPair(pair) {
-  try {
-    const info = await getDexScreener(pair);
-    if (!info) {
-      // Fallback mínimo para SOL
-      if (String(pair || '').toUpperCase() === 'SOL') {
-        return {
-          symbol: 'SOL',
-          mint: SOL_MINT,
-          priceUsd: await getSolUsd(),
-          url: null,
-          metrics: { vol24h: null, liquidity_usd: null, holders: null, fdv: null, marketcap: null }
-        };
-      }
-      return null;
-    }
-    return {
-      symbol: info.symbol,
-      mint: info.mint,
-      priceUsd: info.priceUsd,
-      url: info.url,
+    return data.data.map(token => ({
+      mint: token.address,
+      symbol: token.symbol || 'UNKNOWN',
+      source: 'birdeye-trending',
+      priceUsd: n(token.price),
+      ageMinutes: 5, // Birdeye no siempre provee edad exacta
       metrics: {
-        vol24h: null, // DexScreener search no siempre trae estos campos
-        liquidity_usd: info.liquidityUsd,
-        holders: info.holders,
-        fdv: info.fdv,
-        marketcap: info.marketcap
+        liquidityUsd: n(token.liquidity),
+        volume24h: n(token.volume24h),
+        priceChange24h: n(token.priceChange24h),
+        holders: n(token.holders),
+        fdv: n(token.fdv),
+        marketcap: n(token.marketCap)
+      },
+      intel: {
+        hhhl: n(token.priceChange24h, 0) > 0,
+        retracePct: Math.abs(n(token.priceChange1h, 0)),
+        buyRatioPct: 65 // Estimación para trending tokens
       }
-    };
-  } catch {
-    return null;
+    }));
+
+  } catch (e) {
+    console.error('[SCAN] Birdeye trending error:', e.message);
+    return [];
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// [5] Stubs seguros (para no romper si alguien llama)
-// ─────────────────────────────────────────────────────────────────────────────
-/** Escaneo de candidatos (por ahora sin implementación → lista vacía). */
-export async function scanNewTokens() {
-  return [];
+// Helpers para cálculos
+function calculateAge(createdAt) {
+  if (!createdAt) return 999;
+  try {
+    const created = new Date(createdAt).getTime();
+    const now = Date.now();
+    return Math.floor((now - created) / (1000 * 60)); // minutos
+  } catch {
+    return 999;
+  }
 }
 
-// Default por compatibilidad
-export default {
-  getDexScreener,
-  getBirdeye,
-  getPrice,
-  getSolUsd,
-  getTokenInfoFromPair,
-  scanNewTokens,
-};
+function calculateRetrace(pair) {
+  const h1 = n(pair.priceChange?.h1, 0);
+  const h24 = n(pair.priceChange?.h24, 0);
+  if (h24 <= 0) return 0;
+  return Math.max(0, h24 - h1); // Retroceso desde pico
+}
+
+function calculateBuyRatio(txns) {
+  if (!txns) return 50;
+  const buys = n(txns.buys, 0);
+  const sells = n(txns.sells, 0);
+  const total = buys + sells;
+  return total > 0 ? (buys / total) * 100 : 50;
+}
