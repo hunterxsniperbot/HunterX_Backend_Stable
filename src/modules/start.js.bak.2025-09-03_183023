@@ -1,4 +1,3 @@
-import { registerDemoBuyShim } from '../bot/demoBuyShim.js';
 import { findM4Candidates } from '../orchestrators/m4Candidates.js';
 import { registerComandos } from '../commands/comandos.js';
 import { registerCandidatos } from '../commands/candidatos.js';

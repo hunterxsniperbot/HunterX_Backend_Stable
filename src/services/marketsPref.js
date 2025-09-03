@@ -1,16 +1,32 @@
-const UA = { 'user-agent': 'Mozilla/5.0' };
+import * as base from './markets.js';
+
+// Acepta: named export, default={getSolanaPairs}, o default=function
+const origGetSolanaPairs =
+  base.getSolanaPairs ||
+  (base.default && (base.default.getSolanaPairs || (typeof base.default === 'function' ? base.default : null)));
+
+if (typeof origGetSolanaPairs !== 'function') {
+  console.warn('[marketsPref] WARNING: markets.js no expone getSolanaPairs; usaré sólo fallback Gecko.');
+}
+
+const ORDER = (process.env.MARKETS_ORDER || 'gecko,raydium,dexscreener')
+  .split(',').map(s => s.trim().toLowerCase());
+
+function scoreSource(s){
+  const i = ORDER.indexOf(String(s||'').toLowerCase());
+  return i === -1 ? 999 : i;
+}
 
 async function fetchJson(url, { timeoutMs=2500 } = {}){
   const ac = new AbortController();
   const t = setTimeout(()=>ac.abort('timeout'), timeoutMs);
   try{
-    const r = await fetch(url, { headers: UA, signal: ac.signal });
+    const r = await fetch(url, { headers:{'user-agent':'Mozilla/5.0'}, signal: ac.signal });
     return await r.json();
-  }catch{ return null; }
-  finally{ clearTimeout(t); }
+  }catch{ return null; } finally{ clearTimeout(t); }
 }
 
-// GeckoTerminal (3 páginas rápidas) → mapeo mínimo
+// Fallback directo a GeckoTerminal (rápido, 3 páginas)
 async function getFromGecko(limit=20){
   const out = [];
   for (let page=1; page<=3 && out.length<limit; page++){
@@ -18,17 +34,31 @@ async function getFromGecko(limit=20){
     const arr = j?.data || [];
     for (const it of arr){
       const a = it.attributes || {};
-      const [baseSymbol='?', quoteSymbol='?'] = String(a.name||'').split('/');
-      const pairAddress = typeof it.id==='string' && it.id.startsWith('solana_') ? it.id.slice(7) : null;
+      const name = (a.name || '').trim(); // "TOKEN/WSOL"
+      let baseSymbol='Token', quoteSymbol='?';
+      if (name.includes('/')){
+        const [b,q] = name.split('/');
+        baseSymbol = (b||'Token').slice(0,12);
+        quoteSymbol = (q||'?').slice(0,12);
+      }
+      let pairAddress = null;
+      if (typeof it.id === 'string' && it.id.startsWith('solana_')){
+        pairAddress = it.id.slice('solana_'.length);
+      }
+      const priceUsd = a.base_token_price_usd ? Number(a.base_token_price_usd) : null;
+      const liquidityUsd = a.reserve_in_usd ?? a.reserve_usd ?? a.total_reserve_in_usd ?? null;
+      const fdvUsd = a.fdv_usd ?? a.fdv ?? null;
+
       out.push({
         source: 'gecko',
-        dexId: 'unknown',
+        dexId: 'gecko',
         pairAddress,
-        baseSymbol,
-        quoteSymbol,
-        priceUsd: a.base_token_price_usd ? Number(a.base_token_price_usd) : null,
-        liquidityUsd: a.reserve_in_usd ? Number(a.reserve_in_usd) : (a.total_reserve_in_usd ? Number(a.total_reserve_in_usd) : null),
-        fdvUsd: a.fdv_usd ? Number(a.fdv_usd) : null,
+        baseSymbol, quoteSymbol,
+        priceUsd,
+        liquidityUsd: liquidityUsd ? Number(liquidityUsd) : null,
+        fdvUsd: fdvUsd ? Number(fdvUsd) : null,
+        links: pairAddress ? { gecko: `https://www.geckoterminal.com/solana/pools/${pairAddress}` } : {},
+        gecko: { raw: a },
       });
       if (out.length>=limit) break;
     }
@@ -36,27 +66,29 @@ async function getFromGecko(limit=20){
   return out;
 }
 
-export async function getSolanaPairs({limit=20}={}){
-  // Fase 1: intentá tu markets.js original (si existe)
+export async function getSolanaPairs(opts = {}) {
+  const limit = Number(opts.limit || 20);
   let arr = [];
-  try {
-    const orig = await import('./markets.js');
-    if (orig.getSolanaPairs) {
-      const r = await orig.getSolanaPairs({limit}).catch(()=>[]);
-      arr = Array.isArray(r) ? r : [];
-    }
-  } catch { arr = []; }
 
-  // Fase 2: si no hay nada, Gecko
-  if (arr.length === 0) {
+  // Intento markets.js si existe
+  try {
+    if (typeof origGetSolanaPairs === 'function') {
+      const baseArr = await origGetSolanaPairs({ limit });
+      if (Array.isArray(baseArr) && baseArr.length) arr = baseArr;
+    }
+  } catch {}
+
+  // Si no trajo nada, usá Gecko
+  if (!arr.length) {
     const gk = await getFromGecko(limit).catch(()=>[]);
-    arr = Array.isArray(gk) ? gk : [];
+    if (Array.isArray(gk)) arr = gk;
   }
 
-  // Dedup básico
+  // Orden y dedup
   const seen = new Set();
+  const sorted = arr.sort((a,b) => scoreSource(a.source) - scoreSource(b.source));
   const out = [];
-  for (const p of arr){
+  for (const p of sorted) {
     const key = p.pairAddress || `${p.baseSymbol}|${p.quoteSymbol}|${p.dexId||p.source}`;
     if (seen.has(key)) continue;
     seen.add(key);

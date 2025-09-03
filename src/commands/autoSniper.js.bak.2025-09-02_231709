@@ -1,4 +1,3 @@
-import { findM4Candidates } from '../orchestrators/m4Candidates.js';
 /* =====================================================================
    HUNTER X — autoSniper.js
    Build Tag: HX-A12 (Anti-FOMO) — v2025-08-19
