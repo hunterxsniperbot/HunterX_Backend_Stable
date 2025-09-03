@@ -1,0 +1,34 @@
+🌐 undici: IPv4 forced (family=4)
+HTTP boot: undici keep-alive activado
+🛰️ [TG] Modo: POLLING
+🔧 Iniciando bot…
+✅ Handler cargado: ajustes.js (HX-A08)
+✅ ajustes.js
+✅ Handler cargado: sniperReset.js
+✅ sniperReset.js
+✅ autoSniper.js
+✅ wallet.js
+✅ Handler cargado: registro.js (HX-A07)
+✅ registro.js
+✅ Handler cargado: mensaje.js (ayuda avanzada)
+✅ mensaje.js
+ℹ️  wallet_sell: deshabilitado (WALLET_SELL_VIA_HANDLER!=1)
+✅ wallet_sell.js
+✅ Handler cargado: status.js (HX-A06)
+✅ status.js
+✅ Handler cargado: initSheets.js
+✅ initSheets.js
+✅ Handler cargado: pick.js
+✅ pick.js
+✅ Handler cargado: mode.js (HX-A05)
+✅ mode.js
+✅ salud.js
+✅ DEMO: registrando /demo_reset /demo_buy /demo_state /demo_sell /registro_export
+✅ demo_buy.js
+🌐 API escuchando en http://0.0.0.0:3000
+🌐 API escuchando en http://0.0.0.0:3030
+🗂️ [mode] RealMode map cargado (persistencia)
+🟦 [Slash] comandos seteados
+🤖 HunterX Bot arrancado y escuchando comandos
+✅ candidatos.js (dinámico + fallback)
+🔌 wireCandidatos OK

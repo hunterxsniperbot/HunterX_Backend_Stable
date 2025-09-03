@@ -1,3 +1,4 @@
+import "./server.js";
 import { wireCandidatos } from "./src/bot/wireCandidatos.js";
 import "./src/boot/ipv4.js";
 import './server.js';

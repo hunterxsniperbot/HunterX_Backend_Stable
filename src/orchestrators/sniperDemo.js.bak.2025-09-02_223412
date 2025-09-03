@@ -1,6 +1,4 @@
-import * as mk from "../services/marketsPref.js";
-const getSolanaPairs = mk.getSolanaPairs || (async ()=>[]);
-const ageMinutes = mk.ageMinutes || (ts => { const t = (typeof ts==="number") ? ts : Date.parse(ts); if(!isFinite(t)) return null; return Math.max(0, Math.round((Date.now()-t)/60000)); });
+import { getSolanaPairs, ageMinutes } from '../services/markets.js';
 import { buyDemo } from '../services/demoBank.js';
 
 const CFG = {
