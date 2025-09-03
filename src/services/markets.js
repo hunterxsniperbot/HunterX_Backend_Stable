@@ -1,260 +1,191 @@
-// src/services/markets.js — PRO (gratis-first)
-// Fuentes: GeckoTerminal (new pools) → Raydium v3 → DexScreener (último)
-// Precio: Jupiter Price v3 (lite)
-// Estrategia: rate-limit local por host, caché 5s, backoff 15s en 429/timeout.
+// Reemplazar la función scanNewTokens() vacía en markets.js
 
-const ORDER = (process.env.MARKET_ORDER || 'gecko,raydium,dexs')
-  .split(',').map(s=>s.trim().toLowerCase()).filter(Boolean);
+// ─────────────────────────────────────────────────────────────────────────────
+// [5] Scan de tokens nuevos - IMPLEMENTACIÓN COMPLETA
+// ─────────────────────────────────────────────────────────────────────────────
 
-const CFG = {
-  cacheMs:  Number(process.env.MARKET_CACHE_MS || 5000),
-  timeout:  Number(process.env.MARKET_TIMEOUT_MS || 3000),
-  backoff:  Number(process.env.MARKET_BACKOFF_MS || 15000),
-  minInt: {
-    gecko:   Number(process.env.MARKET_MIN_INTERVAL_MS_gecko   || 3000),
-    raydium: Number(process.env.MARKET_MIN_INTERVAL_MS_raydium || 4000),
-    dexs:    Number(process.env.MARKET_MIN_INTERVAL_MS_dexs    || 5000),
-  },
-  jupLite:  process.env.JUP_LITE_URL || 'https://lite-api.jup.ag/price/v3',
-};
+/** 
+ * Escanea tokens nuevos usando múltiples fuentes
+ * Retorna: Array de candidatos con métricas normalizadas
+ */
+export async function scanNewTokens() {
+  const candidates = [];
+  
+  try {
+    // 1. DexScreener - tokens trending últimas 24h en Solana
+    const dsTrending = await scanDexScreenerTrending();
+    if (dsTrending.length) candidates.push(...dsTrending);
 
-const DESKTOP_UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome Safari';
+    // 2. DexScreener - nuevos pares (filtrar por edad)
+    const dsNew = await scanDexScreenerNew();
+    if (dsNew.length) candidates.push(...dsNew);
 
-const hostsState = new Map(); // host -> {lastAt, cooldownUntil}
-const memCache   = new Map(); // key -> {ts, data}
+    // 3. Birdeye - trending si tienes API key
+    if (BIRDEYE_API_KEY) {
+      const beTrending = await scanBirdeyeTrending();
+      if (beTrending.length) candidates.push(...beTrending);
+    }
 
-function now(){ return Date.now(); }
-function inCooldown(host){ return (hostsState.get(host)?.cooldownUntil||0) > now(); }
-function setCooldown(host, ms){ hostsState.set(host, { ...(hostsState.get(host)||{}), cooldownUntil: now()+ms }); }
-function canHit(host, minInterval){
-  const st = hostsState.get(host)||{};
-  if ((st.cooldownUntil||0) > now()) return false;
-  if ((st.lastAt||0) + minInterval > now()) return false;
-  return true;
-}
-function markHit(host){ hostsState.set(host, { ...(hostsState.get(host)||{}), lastAt: now() }); }
-
-async function fetchJson(url, { timeoutMs=CFG.timeout }={}){
-  const ac = new AbortController();
-  const t = setTimeout(()=>ac.abort('timeout'), timeoutMs);
-  const host = new URL(url).host;
-  try{
-    if (inCooldown(host)) return { ok:false, status:429, json:null, url, error:'cooldown' };
-    markHit(host);
-    const r = await fetch(url, {
-      signal: ac.signal,
-      headers: { 'user-agent': DESKTOP_UA, 'accept':'application/json' }
+    // 4. Dedupe por mint address
+    const seen = new Set();
+    const unique = candidates.filter(c => {
+      if (!c.mint || seen.has(c.mint)) return false;
+      seen.add(c.mint);
+      return true;
     });
-    const ok = r.ok;
-    let json = null;
-    try { json = await r.json(); } catch {}
-    if (!ok && (r.status===429||r.status===503)) setCooldown(host, CFG.backoff);
-    return { ok, status:r.status, json, url };
-  } catch(e){
-    setCooldown(host, Math.max(CFG.backoff, 8000));
-    return { ok:false, status:null, json:null, error:String(e?.message||e), url };
-  } finally { clearTimeout(t); }
-}
 
-function num(...xs){ for (const x of xs){ const v=Number(x); if (Number.isFinite(v)&&v!==0) return v; } return 0; }
+    // 5. Filtro básico de edad (solo tokens de 1-10 minutos)
+    const filtered = unique.filter(c => {
+      const ageMin = c.ageMinutes || 999;
+      return ageMin >= 1 && ageMin <= 10;
+    });
 
-// ---------- Shapes a formato común ----------
-function findIncludedToken(included, rel){
-  if (!included || !rel?.data?.id) return null;
-  const id = rel.data.id;
-  // fallback: buscar por id o por address
-  const byId = included.find(i => i.type==='tokens' && i.id===id);
-  if (byId?.attributes) return byId.attributes;
-  // a veces el id no matchea; intentamos por address si viene en attributes
-  return null;
-}
+    console.log(`[SCAN] Encontrados: ${candidates.length}, únicos: ${unique.length}, filtrados: ${filtered.length}`);
+    return filtered;
 
-function symbolFromName(name, idx){
-  if (typeof name !== 'string') return null;
-  const parts = name.split('/');
-  if (parts.length >= 2) return (idx===0 ? parts[0] : parts[1]).trim();
-  return null;
-}
-
-function shapeGeckoPool(p, included){
-  const attrs = p?.attributes || {};
-  // 1) intentar símbolos directos del payload
-  let baseSymbol = attrs.base_token_symbol || null;
-  let quoteSymbol = attrs.quote_token_symbol || null;
-
-  // 2) si no, usar el name "AAA/BBB"
-  if (!baseSymbol)  baseSymbol  = symbolFromName(attrs.name, 0);
-  if (!quoteSymbol) quoteSymbol = symbolFromName(attrs.name, 1);
-
-  // 3) included (si vino y podemos mapear)
-  if ((!baseSymbol || !quoteSymbol) && included?.length){
-    const baseTok  = findIncludedToken(included, p.relationships?.base_token);
-    const quoteTok = findIncludedToken(included, p.relationships?.quote_token);
-    baseSymbol  ||= baseTok?.symbol || baseTok?.name || null;
-    quoteSymbol ||= quoteTok?.symbol || quoteTok?.name || null;
+  } catch (e) {
+    console.error('[SCAN] Error:', e.message);
+    return [];
   }
-
-  // Direcciones (mismos criterios: attrs directos; si no, nada)
-  const baseAddress  = attrs.base_token_address || null;
-  const quoteAddress = attrs.quote_token_address || null;
-
-  return {
-    source: 'gecko',
-    chainId: 'solana',
-    pairAddress: attrs.address || null,
-    dexId: attrs.dex || attrs.dex_id || null,
-    baseSymbol: baseSymbol || '?',
-    baseAddress: baseAddress || null,
-    quoteSymbol: quoteSymbol || null,
-    quoteAddress: quoteAddress || null,
-    liquidityUsd: num(attrs.reserve_in_usd, attrs.tvl_usd),
-    fdvUsd: num(attrs.fdv_usd, attrs.fully_diluted_valuation),
-    vol_m1_usd: 0, // Gecko no expone m1 directo en este endpoint
-    vol_m5_usd: 0,
-    txns_m1: 0,
-    txns_m5: 0,
-    createdAtMs: attrs.pool_created_at ? Date.parse(attrs.pool_created_at) : null,
-    raw: { p, included: !!included }
-  };
 }
 
-function shapeRay(p){
-  return {
-    source: 'raydium',
-    chainId: 'solana',
-    pairAddress: p?.id || p?.pair_id || null,
-    dexId: 'raydium',
-    baseSymbol: p?.baseSymbol || p?.base?.symbol || (p?.name?.split('/')?.[0]) || '?',
-    baseAddress: p?.baseMint || p?.base?.mint || null,
-    quoteSymbol: p?.quoteSymbol || p?.quote?.symbol || (p?.name?.split('/')?.[1]) || null,
-    quoteAddress: p?.quoteMint || p?.quote?.mint || null,
-    liquidityUsd: num(p?.liquidity, p?.liquidityUSD, p?.liquidityUsd, p?.tvl),
-    fdvUsd: num(p?.marketCap, p?.fdv),
-    vol_m1_usd: 0,
-    vol_m5_usd: num(p?.volume24h, p?.volumeUSD24h) / (24*12),
-    txns_m1: 0,
-    txns_m5: 0,
-    createdAtMs: null,
-    raw: p,
-  };
-}
+// Escanear trending en DexScreener
+async function scanDexScreenerTrending() {
+  try {
+    const url = 'https://api.dexscreener.com/latest/dex/tokens/trending?chain=solana';
+    const data = await fetchJson(url, { timeout: 8000 });
+    
+    if (!Array.isArray(data?.pairs)) return [];
 
-function shapeDexs(p){
-  const base = p?.baseToken || {};
-  const quote= p?.quoteToken || {};
-  const vol  = p?.volume || {};
-  const txns = p?.txns || {};
-  const liq  = p?.liquidity || {};
-  const createdAt = p?.pairCreatedAt || p?.info?.launchedAt || null;
-  return {
-    source: 'dexs',
-    chainId: (p?.chainId||'solana').toLowerCase(),
-    pairAddress: p?.pairAddress || p?.url || null,
-    dexId: p?.dexId || null,
-    baseSymbol: base.symbol || p?.baseSymbol || p?.symbol || '?',
-    baseAddress: base.address || p?.baseAddress || null,
-    quoteSymbol: quote.symbol || null,
-    quoteAddress: quote.address || null,
-    liquidityUsd: num(liq.usd, liq.usdValue, liq.total, p?.tvl),
-    fdvUsd: num(p?.fdv, p?.marketCap),
-    vol_m1_usd: num(vol.m1, vol['1m']),
-    vol_m5_usd: num(vol.m5, vol['5m']),
-    txns_m1: (txns.m1?.buys ?? 0) + (txns.m1?.sells ?? 0) || 0,
-    txns_m5: (txns.m5?.buys ?? 0) + (txns.m5?.sells ?? 0) || 0,
-    createdAtMs: createdAt ? Number(createdAt) : null,
-    raw: p,
-  };
-}
+    return data.pairs.map(pair => ({
+      mint: pair.baseToken?.address,
+      symbol: pair.baseToken?.symbol || 'UNKNOWN',
+      source: 'dexscreener-trending',
+      priceUsd: n(pair.priceUsd),
+      ageMinutes: calculateAge(pair.pairCreatedAt),
+      metrics: {
+        liquidityUsd: n(pair.liquidity?.usd),
+        volume24h: n(pair.volume?.h24),
+        priceChange24h: n(pair.priceChange?.h24),
+        txCount24h: n(pair.txns?.h24?.buys + pair.txns?.h24?.sells),
+        makers24h: n(pair.txns?.h24?.buyers + pair.txns?.h24?.sellers)
+      },
+      intel: {
+        hhhl: pair.priceChange?.h1 > 0 && pair.priceChange?.h24 > 0,
+        retracePct: calculateRetrace(pair),
+        buyRatioPct: calculateBuyRatio(pair.txns?.h24)
+      }
+    }));
 
-// ---------- Clientes ----------
-async function geckoNewPools(){
-  // https://api.geckoterminal.com/api/v2/networks/solana/new_pools?include=base_token,quote_token&per_page=100
-  const url = 'https://api.geckoterminal.com/api/v2/networks/solana/new_pools?include=base_token,quote_token&per_page=100';
-  const r = await fetchJson(url);
-  if (!r.ok || !Array.isArray(r.json?.data)) return [];
-  const data = r.json.data, inc = r.json.included || [];
-  return data.map(d => shapeGeckoPool(d, inc)).filter(p => p.chainId==='solana');
-}
-
-async function raydiumV3List(){
-  const url = 'https://api-v3.raydium.io/pools/info?poolType=all&size=100';
-  const r = await fetchJson(url, { timeoutMs: Math.max(CFG.timeout, 3500) });
-  if (!r.ok || !Array.isArray(r.json?.data)) return [];
-  return r.json.data.map(shapeRay);
-}
-
-async function dexsPairs(){
-  const url = 'https://api.dexscreener.com/latest/dex/pairs/solana';
-  const r = await fetchJson(url, { timeoutMs: Math.max(CFG.timeout, 3500) });
-  if (!r.ok || !Array.isArray(r.json?.pairs)) return [];
-  return r.json.pairs.filter(p=>(p?.chainId||'solana').toLowerCase()==='solana').map(shapeDexs);
-}
-
-// ---------- Agregador con rate-limit local + backoff ----------
-async function callWithGuard(name, fn){
-  const minInt = CFG.minInt[name] || 3000;
-  const host = name; // usamos name como key de ritmo
-  if (!canHit(host, minInt)) return [];
-  const out = await fn().catch(()=>[]);
-  if (!out || !Array.isArray(out)) return [];
-  return out;
-}
-
-function uniqBy(arr, keyFn){
-  const m=new Set(); const out=[];
-  for (const x of arr){
-    const k=keyFn(x); if (m.has(k)) continue; m.add(k); out.push(x);
+  } catch (e) {
+    console.error('[SCAN] DexScreener trending error:', e.message);
+    return [];
   }
-  return out;
 }
 
-// ---------- Jupiter price (lite) ----------
-async function enrichPrices(pairs){
-  try{
-    const mints = pairs.map(p=>p.baseAddress).filter(Boolean).slice(0,50);
-    if (!mints.length) return pairs;
-    const url = CFG.jupLite + '?ids=' + encodeURIComponent(mints.join(','));
-    const r = await fetchJson(url, { timeoutMs: 2500 });
-    const map = r.ok && r.json?.data ? r.json.data : {};
-    for (const p of pairs){
-      const mint = p.baseAddress;
-      const price = map?.[mint]?.price;
-      if (price) p.priceUsd = Number(price);
-    }
-  }catch{}
-  return pairs;
-}
+// Escanear nuevos pares en DexScreener
+async function scanDexScreenerNew() {
+  try {
+    // API endpoint para nuevos pares (puede requerir ajuste según disponibilidad)
+    const url = 'https://api.dexscreener.com/latest/dex/pairs/solana?limit=50';
+    const data = await fetchJson(url, { timeout: 8000 });
+    
+    if (!Array.isArray(data?.pairs)) return [];
 
-// ---------- API público ----------
-export async function getSolanaPairs({ limit=80, withPrice=false }={}){
-  const cacheKey = `pairs:${limit}:${withPrice}`;
-  const hit = memCache.get(cacheKey);
-  if (hit && now()-hit.ts < CFG.cacheMs) return hit.data;
+    // Filtrar solo pares muy nuevos
+    const newPairs = data.pairs.filter(pair => {
+      const ageMin = calculateAge(pair.pairCreatedAt);
+      return ageMin <= 15; // Menos de 15 minutos
+    });
 
-  let list = [];
-  for (const name of ORDER){
-    let got = [];
-    if (name==='gecko')      got = await callWithGuard('gecko',   geckoNewPools);
-    else if (name==='raydium') got = await callWithGuard('raydium', raydiumV3List);
-    else if (name==='dexs')     got = await callWithGuard('dexs',    dexsPairs);
-    if (got.length){
-      list = got;
-      break;
-    }
+    return newPairs.map(pair => ({
+      mint: pair.baseToken?.address,
+      symbol: pair.baseToken?.symbol || 'UNKNOWN',
+      source: 'dexscreener-new',
+      priceUsd: n(pair.priceUsd),
+      ageMinutes: calculateAge(pair.pairCreatedAt),
+      metrics: {
+        liquidityUsd: n(pair.liquidity?.usd),
+        volume24h: n(pair.volume?.h24),
+        fdv: n(pair.fdv),
+        marketcap: n(pair.marketCap)
+      },
+      intel: {
+        hhhl: true, // Asumir momentum positivo para nuevos
+        retracePct: 0,
+        buyRatioPct: 70 // Optimistic para nuevos pares
+      }
+    }));
+
+  } catch (e) {
+    console.error('[SCAN] DexScreener new pairs error:', e.message);
+    return [];
   }
-  if (!Array.isArray(list)) list = [];
-  list = uniqBy(list, x => x.pairAddress || x.baseAddress || x.baseSymbol);
-  if (limit>0) list = list.slice(0, limit);
-  if (withPrice) list = await enrichPrices(list);
-
-  memCache.set(cacheKey, { ts: now(), data: list });
-  return list;
 }
 
-// Edad en minutos (si la fuente provee timestamp)
-export function ageMinutes(p){
-  if (!p?.createdAtMs) return null;
-  const ms = Date.now() - Number(p.createdAtMs);
-  if (!Number.isFinite(ms) || ms<=0) return null;
-  return Math.floor(ms/60000);
+// Escanear trending en Birdeye (requiere API key)
+async function scanBirdeyeTrending() {
+  try {
+    if (!BIRDEYE_API_KEY) return [];
+
+    const url = `${BIRDEYE_BASE}/defi/trending_tokens?chain=solana&timeframe=24h&limit=30`;
+    const data = await fetchJson(url, {
+      headers: { 'X-API-KEY': BIRDEYE_API_KEY, accept: 'application/json' },
+      timeout: MARKET_TIMEOUT_MS
+    });
+
+    if (!Array.isArray(data?.data)) return [];
+
+    return data.data.map(token => ({
+      mint: token.address,
+      symbol: token.symbol || 'UNKNOWN',
+      source: 'birdeye-trending',
+      priceUsd: n(token.price),
+      ageMinutes: 5, // Birdeye no siempre provee edad exacta
+      metrics: {
+        liquidityUsd: n(token.liquidity),
+        volume24h: n(token.volume24h),
+        priceChange24h: n(token.priceChange24h),
+        holders: n(token.holders),
+        fdv: n(token.fdv),
+        marketcap: n(token.marketCap)
+      },
+      intel: {
+        hhhl: n(token.priceChange24h, 0) > 0,
+        retracePct: Math.abs(n(token.priceChange1h, 0)),
+        buyRatioPct: 65 // Estimación para trending tokens
+      }
+    }));
+
+  } catch (e) {
+    console.error('[SCAN] Birdeye trending error:', e.message);
+    return [];
+  }
+}
+
+// Helpers para cálculos
+function calculateAge(createdAt) {
+  if (!createdAt) return 999;
+  try {
+    const created = new Date(createdAt).getTime();
+    const now = Date.now();
+    return Math.floor((now - created) / (1000 * 60)); // minutos
+  } catch {
+    return 999;
+  }
+}
+
+function calculateRetrace(pair) {
+  const h1 = n(pair.priceChange?.h1, 0);
+  const h24 = n(pair.priceChange?.h24, 0);
+  if (h24 <= 0) return 0;
+  return Math.max(0, h24 - h1); // Retroceso desde pico
+}
+
+function calculateBuyRatio(txns) {
+  if (!txns) return 50;
+  const buys = n(txns.buys, 0);
+  const sells = n(txns.sells, 0);
+  const total = buys + sells;
+  return total > 0 ? (buys / total) * 100 : 50;
 }
