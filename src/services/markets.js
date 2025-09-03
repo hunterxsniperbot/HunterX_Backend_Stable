@@ -1,289 +1,260 @@
-// ─────────────────────────────────────────────────────────────────────────────
-// HUNTER X — Markets DataRouter — HX-MKT-01 — v2025-08-19 (ESM)
-// Secciones:
-//   [1] ENV / Constantes
-//   [2] Helpers (fetch JSON con timeout, normalizadores)
-//   [3] Proveedores: DexScreener, Birdeye, CoinGecko (SOL)
-//   [4] Router: getPrice (primario/fallback), getTokenInfoFromPair
-//   [5] Stubs seguros (scanNewTokens)
-// Exports: getDexScreener, getBirdeye, getPrice, getSolUsd, getTokenInfoFromPair, scanNewTokens
-//
-// Notas:
-//   • MARKET_PRIMARY: 'birdeye' | 'dexscreener'  (default: 'dexscreener')
-//   • BIRDEYE_API_KEY requerido para usar Birdeye
-//   • Todos los campos devueltos son best-effort; faltantes → null
-//   • Diseñado para no romper: si falla un proveedor, degrada suave
-// ─────────────────────────────────────────────────────────────────────────────
+// src/services/markets.js — PRO (gratis-first)
+// Fuentes: GeckoTerminal (new pools) → Raydium v3 → DexScreener (último)
+// Precio: Jupiter Price v3 (lite)
+// Estrategia: rate-limit local por host, caché 5s, backoff 15s en 429/timeout.
 
-import fetch from 'node-fetch';
+const ORDER = (process.env.MARKET_ORDER || 'gecko,raydium,dexs')
+  .split(',').map(s=>s.trim().toLowerCase()).filter(Boolean);
 
-// ─────────────────────────────────────────────────────────────────────────────
-// [1] ENV / Constantes
-// ─────────────────────────────────────────────────────────────────────────────
-const MARKET_PRIMARY     = (process.env.MARKET_PRIMARY || 'dexscreener').toLowerCase();
-const MARKET_TIMEOUT_MS  = Number(process.env.MARKET_TIMEOUT_MS || 6000);
+const CFG = {
+  cacheMs:  Number(process.env.MARKET_CACHE_MS || 5000),
+  timeout:  Number(process.env.MARKET_TIMEOUT_MS || 3000),
+  backoff:  Number(process.env.MARKET_BACKOFF_MS || 15000),
+  minInt: {
+    gecko:   Number(process.env.MARKET_MIN_INTERVAL_MS_gecko   || 3000),
+    raydium: Number(process.env.MARKET_MIN_INTERVAL_MS_raydium || 4000),
+    dexs:    Number(process.env.MARKET_MIN_INTERVAL_MS_dexs    || 5000),
+  },
+  jupLite:  process.env.JUP_LITE_URL || 'https://lite-api.jup.ag/price/v3',
+};
 
-const BIRDEYE_API_KEY    = process.env.BIRDEYE_API_KEY || '';
-const BIRDEYE_BASE       = process.env.BIRDEYE_BASE || 'https://public-api.birdeye.so';
+const DESKTOP_UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome Safari';
 
-const COINGECKO_PRICE_URL = 'https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd';
-const SOL_MINT            = 'So11111111111111111111111111111111111111112';
+const hostsState = new Map(); // host -> {lastAt, cooldownUntil}
+const memCache   = new Map(); // key -> {ts, data}
 
-// ─────────────────────────────────────────────────────────────────────────────
-// [2] Helpers
-// ─────────────────────────────────────────────────────────────────────────────
-async function fetchJson(url, { timeout = MARKET_TIMEOUT_MS, headers = {} } = {}) {
-  try {
-    const r = await fetch(url, { timeout, headers });
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    return await r.json();
-  } catch (e) {
-    return null;
-  }
+function now(){ return Date.now(); }
+function inCooldown(host){ return (hostsState.get(host)?.cooldownUntil||0) > now(); }
+function setCooldown(host, ms){ hostsState.set(host, { ...(hostsState.get(host)||{}), cooldownUntil: now()+ms }); }
+function canHit(host, minInterval){
+  const st = hostsState.get(host)||{};
+  if ((st.cooldownUntil||0) > now()) return false;
+  if ((st.lastAt||0) + minInterval > now()) return false;
+  return true;
+}
+function markHit(host){ hostsState.set(host, { ...(hostsState.get(host)||{}), lastAt: now() }); }
+
+async function fetchJson(url, { timeoutMs=CFG.timeout }={}){
+  const ac = new AbortController();
+  const t = setTimeout(()=>ac.abort('timeout'), timeoutMs);
+  const host = new URL(url).host;
+  try{
+    if (inCooldown(host)) return { ok:false, status:429, json:null, url, error:'cooldown' };
+    markHit(host);
+    const r = await fetch(url, {
+      signal: ac.signal,
+      headers: { 'user-agent': DESKTOP_UA, 'accept':'application/json' }
+    });
+    const ok = r.ok;
+    let json = null;
+    try { json = await r.json(); } catch {}
+    if (!ok && (r.status===429||r.status===503)) setCooldown(host, CFG.backoff);
+    return { ok, status:r.status, json, url };
+  } catch(e){
+    setCooldown(host, Math.max(CFG.backoff, 8000));
+    return { ok:false, status:null, json:null, error:String(e?.message||e), url };
+  } finally { clearTimeout(t); }
 }
 
-function n(x, d = null) {
-  const v = Number(x);
-  return Number.isFinite(v) ? v : d;
-}
-function pickFirst(...vals) {
-  for (const v of vals) if (v != null) return v;
+function num(...xs){ for (const x of xs){ const v=Number(x); if (Number.isFinite(v)&&v!==0) return v; } return 0; }
+
+// ---------- Shapes a formato común ----------
+function findIncludedToken(included, rel){
+  if (!included || !rel?.data?.id) return null;
+  const id = rel.data.id;
+  // fallback: buscar por id o por address
+  const byId = included.find(i => i.type==='tokens' && i.id===id);
+  if (byId?.attributes) return byId.attributes;
+  // a veces el id no matchea; intentamos por address si viene en attributes
   return null;
 }
 
-// Normaliza estructura “token metrics” a un shape común
-function normalizeToken({ symbol, mint, priceUsd, url, raw = {}, source = 'unknown' }) {
+function symbolFromName(name, idx){
+  if (typeof name !== 'string') return null;
+  const parts = name.split('/');
+  if (parts.length >= 2) return (idx===0 ? parts[0] : parts[1]).trim();
+  return null;
+}
+
+function shapeGeckoPool(p, included){
+  const attrs = p?.attributes || {};
+  // 1) intentar símbolos directos del payload
+  let baseSymbol = attrs.base_token_symbol || null;
+  let quoteSymbol = attrs.quote_token_symbol || null;
+
+  // 2) si no, usar el name "AAA/BBB"
+  if (!baseSymbol)  baseSymbol  = symbolFromName(attrs.name, 0);
+  if (!quoteSymbol) quoteSymbol = symbolFromName(attrs.name, 1);
+
+  // 3) included (si vino y podemos mapear)
+  if ((!baseSymbol || !quoteSymbol) && included?.length){
+    const baseTok  = findIncludedToken(included, p.relationships?.base_token);
+    const quoteTok = findIncludedToken(included, p.relationships?.quote_token);
+    baseSymbol  ||= baseTok?.symbol || baseTok?.name || null;
+    quoteSymbol ||= quoteTok?.symbol || quoteTok?.name || null;
+  }
+
+  // Direcciones (mismos criterios: attrs directos; si no, nada)
+  const baseAddress  = attrs.base_token_address || null;
+  const quoteAddress = attrs.quote_token_address || null;
+
   return {
-    source,
-    symbol: symbol || null,
-    mint: mint || null,
-    priceUsd: n(priceUsd, null),
-    url: url || null,
-    // Métricas best-effort (pueden venir faltantes en cada proveedor)
-    liquidityUsd: n(raw.liquidityUsd ?? raw.liquidity_usd ?? raw.liquidity, null),
-    spreadPct: n(raw.spreadPct ?? raw.spread_pct ?? raw.spread, null),
-    vol5m: n(raw.vol5m ?? raw.volume5m ?? raw.vol_5m, null),
-    txPerMin: n(raw.txPerMin ?? raw.tpm, null),
-    uniqueBuyersMin: n(raw.uniqueBuyersMin ?? raw.ubuy, null),
-    holders: n(raw.holders ?? raw.holder ?? raw.holdersCount, null),
-    fdv: n(raw.fdv ?? raw.fdvUsd ?? raw.fdv_usd, null),
-    marketcap: n(raw.marketcap ?? raw.marketCap ?? raw.mcap, null),
-    lpLockOrBurnPct: n(raw.lpLockOrBurnPct ?? raw.lp_lock_pct ?? raw.lp_burn_pct, null),
-    _raw: raw, // por si querés debuggear luego
+    source: 'gecko',
+    chainId: 'solana',
+    pairAddress: attrs.address || null,
+    dexId: attrs.dex || attrs.dex_id || null,
+    baseSymbol: baseSymbol || '?',
+    baseAddress: baseAddress || null,
+    quoteSymbol: quoteSymbol || null,
+    quoteAddress: quoteAddress || null,
+    liquidityUsd: num(attrs.reserve_in_usd, attrs.tvl_usd),
+    fdvUsd: num(attrs.fdv_usd, attrs.fully_diluted_valuation),
+    vol_m1_usd: 0, // Gecko no expone m1 directo en este endpoint
+    vol_m5_usd: 0,
+    txns_m1: 0,
+    txns_m5: 0,
+    createdAtMs: attrs.pool_created_at ? Date.parse(attrs.pool_created_at) : null,
+    raw: { p, included: !!included }
   };
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// [3] Proveedores
-// ─────────────────────────────────────────────────────────────────────────────
-
-// 3.1 — CoinGecko (precio de SOL en USD)
-export async function getSolUsd() {
-  try {
-    const j = await fetchJson(COINGECKO_PRICE_URL, { timeout: 7000 });
-    const v = j?.solana?.usd;
-    return (typeof v === 'number') ? v : null;
-  } catch {
-    return null;
-  }
+function shapeRay(p){
+  return {
+    source: 'raydium',
+    chainId: 'solana',
+    pairAddress: p?.id || p?.pair_id || null,
+    dexId: 'raydium',
+    baseSymbol: p?.baseSymbol || p?.base?.symbol || (p?.name?.split('/')?.[0]) || '?',
+    baseAddress: p?.baseMint || p?.base?.mint || null,
+    quoteSymbol: p?.quoteSymbol || p?.quote?.symbol || (p?.name?.split('/')?.[1]) || null,
+    quoteAddress: p?.quoteMint || p?.quote?.mint || null,
+    liquidityUsd: num(p?.liquidity, p?.liquidityUSD, p?.liquidityUsd, p?.tvl),
+    fdvUsd: num(p?.marketCap, p?.fdv),
+    vol_m1_usd: 0,
+    vol_m5_usd: num(p?.volume24h, p?.volumeUSD24h) / (24*12),
+    txns_m1: 0,
+    txns_m5: 0,
+    createdAtMs: null,
+    raw: p,
+  };
 }
 
-// 3.2 — DexScreener (token/pair info)
-export async function getDexScreener(mintOrQuery) {
-  try {
-    const q = String(mintOrQuery || '').trim();
-    const looksLikeAddress = q.length > 25; // heurística simple
+function shapeDexs(p){
+  const base = p?.baseToken || {};
+  const quote= p?.quoteToken || {};
+  const vol  = p?.volume || {};
+  const txns = p?.txns || {};
+  const liq  = p?.liquidity || {};
+  const createdAt = p?.pairCreatedAt || p?.info?.launchedAt || null;
+  return {
+    source: 'dexs',
+    chainId: (p?.chainId||'solana').toLowerCase(),
+    pairAddress: p?.pairAddress || p?.url || null,
+    dexId: p?.dexId || null,
+    baseSymbol: base.symbol || p?.baseSymbol || p?.symbol || '?',
+    baseAddress: base.address || p?.baseAddress || null,
+    quoteSymbol: quote.symbol || null,
+    quoteAddress: quote.address || null,
+    liquidityUsd: num(liq.usd, liq.usdValue, liq.total, p?.tvl),
+    fdvUsd: num(p?.fdv, p?.marketCap),
+    vol_m1_usd: num(vol.m1, vol['1m']),
+    vol_m5_usd: num(vol.m5, vol['5m']),
+    txns_m1: (txns.m1?.buys ?? 0) + (txns.m1?.sells ?? 0) || 0,
+    txns_m5: (txns.m5?.buys ?? 0) + (txns.m5?.sells ?? 0) || 0,
+    createdAtMs: createdAt ? Number(createdAt) : null,
+    raw: p,
+  };
+}
 
-    // a) Por token address directo (más preciso)
-    if (looksLikeAddress) {
-      const urlTok = `https://api.dexscreener.com/latest/dex/tokens/${encodeURIComponent(q)}`;
-      const data = await fetchJson(urlTok);
-      const pairs = Array.isArray(data?.pairs) ? data.pairs : [];
-      const solPairs = pairs.filter(p => (p?.chainId || '').toLowerCase() === 'solana');
-      if (solPairs.length) {
-        const cand = solPairs[0];
-        return normalizeToken({
-          source: 'dexscreener',
-          symbol: cand.baseToken?.symbol,
-          mint: cand.baseToken?.address,
-          priceUsd: n(cand.priceUsd, null),
-          url: cand.url,
-          raw: {
-            liquidityUsd: cand.liquidity?.usd,
-            // Algunos campos no existen en DS; dejar null si no hay
-          }
-        });
-      }
+// ---------- Clientes ----------
+async function geckoNewPools(){
+  // https://api.geckoterminal.com/api/v2/networks/solana/new_pools?include=base_token,quote_token&per_page=100
+  const url = 'https://api.geckoterminal.com/api/v2/networks/solana/new_pools?include=base_token,quote_token&per_page=100';
+  const r = await fetchJson(url);
+  if (!r.ok || !Array.isArray(r.json?.data)) return [];
+  const data = r.json.data, inc = r.json.included || [];
+  return data.map(d => shapeGeckoPool(d, inc)).filter(p => p.chainId==='solana');
+}
+
+async function raydiumV3List(){
+  const url = 'https://api-v3.raydium.io/pools/info?poolType=all&size=100';
+  const r = await fetchJson(url, { timeoutMs: Math.max(CFG.timeout, 3500) });
+  if (!r.ok || !Array.isArray(r.json?.data)) return [];
+  return r.json.data.map(shapeRay);
+}
+
+async function dexsPairs(){
+  const url = 'https://api.dexscreener.com/latest/dex/pairs/solana';
+  const r = await fetchJson(url, { timeoutMs: Math.max(CFG.timeout, 3500) });
+  if (!r.ok || !Array.isArray(r.json?.pairs)) return [];
+  return r.json.pairs.filter(p=>(p?.chainId||'solana').toLowerCase()==='solana').map(shapeDexs);
+}
+
+// ---------- Agregador con rate-limit local + backoff ----------
+async function callWithGuard(name, fn){
+  const minInt = CFG.minInt[name] || 3000;
+  const host = name; // usamos name como key de ritmo
+  if (!canHit(host, minInt)) return [];
+  const out = await fn().catch(()=>[]);
+  if (!out || !Array.isArray(out)) return [];
+  return out;
+}
+
+function uniqBy(arr, keyFn){
+  const m=new Set(); const out=[];
+  for (const x of arr){
+    const k=keyFn(x); if (m.has(k)) continue; m.add(k); out.push(x);
+  }
+  return out;
+}
+
+// ---------- Jupiter price (lite) ----------
+async function enrichPrices(pairs){
+  try{
+    const mints = pairs.map(p=>p.baseAddress).filter(Boolean).slice(0,50);
+    if (!mints.length) return pairs;
+    const url = CFG.jupLite + '?ids=' + encodeURIComponent(mints.join(','));
+    const r = await fetchJson(url, { timeoutMs: 2500 });
+    const map = r.ok && r.json?.data ? r.json.data : {};
+    for (const p of pairs){
+      const mint = p.baseAddress;
+      const price = map?.[mint]?.price;
+      if (price) p.priceUsd = Number(price);
     }
+  }catch{}
+  return pairs;
+}
 
-    // b) Por búsqueda “base/quote” o símbolo
-    const url = `https://api.dexscreener.com/latest/dex/search?q=${encodeURIComponent(q)}`;
-    const data = await fetchJson(url);
-    const pairs = Array.isArray(data?.pairs) ? data.pairs : [];
-    const solPairs = pairs.filter(p => (p?.chainId || '').toLowerCase() === 'solana');
-    if (solPairs.length) {
-      const cand = solPairs[0];
-      return normalizeToken({
-        source: 'dexscreener',
-        symbol: cand.baseToken?.symbol || q.toUpperCase(),
-        mint: cand.baseToken?.address || '',
-        priceUsd: n(cand.priceUsd, null),
-        url: cand.url || null,
-        raw: {
-          liquidityUsd: cand.liquidity?.usd,
-        }
-      });
+// ---------- API público ----------
+export async function getSolanaPairs({ limit=80, withPrice=false }={}){
+  const cacheKey = `pairs:${limit}:${withPrice}`;
+  const hit = memCache.get(cacheKey);
+  if (hit && now()-hit.ts < CFG.cacheMs) return hit.data;
+
+  let list = [];
+  for (const name of ORDER){
+    let got = [];
+    if (name==='gecko')      got = await callWithGuard('gecko',   geckoNewPools);
+    else if (name==='raydium') got = await callWithGuard('raydium', raydiumV3List);
+    else if (name==='dexs')     got = await callWithGuard('dexs',    dexsPairs);
+    if (got.length){
+      list = got;
+      break;
     }
-
-    // c) SOL built-in
-    if (q.toUpperCase() === 'SOL') {
-      return normalizeToken({
-        source: 'dexscreener',
-        symbol: 'SOL',
-        mint: SOL_MINT,
-        priceUsd: await getSolUsd(),
-        url: null,
-        raw: {}
-      });
-    }
-
-    return null;
-  } catch {
-    return null;
   }
+  if (!Array.isArray(list)) list = [];
+  list = uniqBy(list, x => x.pairAddress || x.baseAddress || x.baseSymbol);
+  if (limit>0) list = list.slice(0, limit);
+  if (withPrice) list = await enrichPrices(list);
+
+  memCache.set(cacheKey, { ts: now(), data: list });
+  return list;
 }
 
-// 3.3 — Birdeye (requiere API Key)
-export async function getBirdeye(mintOrQuery) {
-  try {
-    if (!BIRDEYE_API_KEY) return null;
-    const q = String(mintOrQuery || '').trim();
-    const looksLikeAddress = q.length > 25;
-    if (!looksLikeAddress) return null; // Birdeye trabaja mejor por address
-
-    // Overview (liquidez, holders, etc.)
-    const ovUrl = `${BIRDEYE_BASE}/defi/token_overview?chain=solana&address=${encodeURIComponent(q)}`;
-    const ov = await fetchJson(ovUrl, {
-      headers: { 'X-API-KEY': BIRDEYE_API_KEY, accept: 'application/json' },
-      timeout: MARKET_TIMEOUT_MS
-    });
-
-    // Precio (algunos planes lo traen en overview; si no, pedirlo aparte)
-    let priceUsd = n(ov?.data?.price, null);
-    if (priceUsd == null) {
-    const pUrl = `${BIRDEYE_BASE}/public/price?address=${encodeURIComponent(q)}`;
-    const p = await fetchJson(pUrl, {
-    headers: { 'X-API-KEY': BIRDEYE_API_KEY, accept: 'application/json' },
-    timeout: MARKET_TIMEOUT_MS
-    });
-    priceUsd = n(p?.data?.value, null);
-    }
-
-    // Intentar símbolo desde overview (si existe)
-    const symbol =
-      ov?.data?.symbol ||
-      ov?.data?.name ||
-      (q === SOL_MINT ? 'SOL' : null);
-
-    return normalizeToken({
-      source: 'birdeye',
-      symbol,
-      mint: q,
-      priceUsd,
-      url: null,
-      raw: {
-        liquidityUsd: ov?.data?.liquidity,
-        holders: ov?.data?.holders,
-        fdvUsd: ov?.data?.fdv,
-        marketcap: ov?.data?.marketCap,
-        // spread/vol/tpm tal vez no estén disponibles en tu plan
-      }
-    });
-  } catch {
-    return null;
-  }
+// Edad en minutos (si la fuente provee timestamp)
+export function ageMinutes(p){
+  if (!p?.createdAtMs) return null;
+  const ms = Date.now() - Number(p.createdAtMs);
+  if (!Number.isFinite(ms) || ms<=0) return null;
+  return Math.floor(ms/60000);
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// [4] Router & compat
-// ─────────────────────────────────────────────────────────────────────────────
-
-// Precio USD por mint (primario/fallback → Number | null)
-export async function getPrice(mintOrQuery) {
-  // 1) Primario
-  if (MARKET_PRIMARY === 'birdeye') {
-    const be = await getBirdeye(mintOrQuery);
-    if (n(be?.priceUsd, null) != null) return n(be.priceUsd, null);
-    const ds = await getDexScreener(mintOrQuery);
-    if (n(ds?.priceUsd, null) != null) return n(ds.priceUsd, null);
-  } else {
-    // 'dexscreener' por defecto
-    const ds = await getDexScreener(mintOrQuery);
-    if (n(ds?.priceUsd, null) != null) return n(ds.priceUsd, null);
-    const be = await getBirdeye(mintOrQuery);
-    if (n(be?.priceUsd, null) != null) return n(be.priceUsd, null);
-  }
-
-  // 2) Fallback específico para SOL
-  if (String(mintOrQuery).toUpperCase() === 'SOL' || String(mintOrQuery) === SOL_MINT) {
-    return await getSolUsd();
-  }
-  return null;
-}
-
-/**
- * Compat: resolver par/símbolo “SOL”, “SOL/USDT”… usando DexScreener (como antes).
- * Devuelve:
- *   { symbol, mint, priceUsd, url, metrics:{vol24h, liquidity_usd, holders, fdv, marketcap} } | null
- */
-export async function getTokenInfoFromPair(pair) {
-  try {
-    const info = await getDexScreener(pair);
-    if (!info) {
-      // Fallback mínimo para SOL
-      if (String(pair || '').toUpperCase() === 'SOL') {
-        return {
-          symbol: 'SOL',
-          mint: SOL_MINT,
-          priceUsd: await getSolUsd(),
-          url: null,
-          metrics: { vol24h: null, liquidity_usd: null, holders: null, fdv: null, marketcap: null }
-        };
-      }
-      return null;
-    }
-    return {
-      symbol: info.symbol,
-      mint: info.mint,
-      priceUsd: info.priceUsd,
-      url: info.url,
-      metrics: {
-        vol24h: null, // DexScreener search no siempre trae estos campos
-        liquidity_usd: info.liquidityUsd,
-        holders: info.holders,
-        fdv: info.fdv,
-        marketcap: info.marketcap
-      }
-    };
-  } catch {
-    return null;
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// [5] Stubs seguros (para no romper si alguien llama)
-// ─────────────────────────────────────────────────────────────────────────────
-/** Escaneo de candidatos (por ahora sin implementación → lista vacía). */
-export async function scanNewTokens() {
-  return [];
-}
-
-// Default por compatibilidad
-export default {
-  getDexScreener,
-  getBirdeye,
-  getPrice,
-  getSolUsd,
-  getTokenInfoFromPair,
-  scanNewTokens,
-};

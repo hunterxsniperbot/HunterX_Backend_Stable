@@ -1,0 +1,7 @@
+[
+  { "source":"gecko","pairAddress":"sol_ex1","baseSymbol":"MITCH","quoteSymbol":"WSOL","priceUsd":0.000045,"liquidityUsd":153000,"fdvUsd":789999 },
+  { "source":"gecko","pairAddress":"sol_ex2","baseSymbol":"HOOD","quoteSymbol":"WSOL","priceUsd":0.000210,"liquidityUsd":7100,"fdvUsd":9600 },
+  { "source":"gecko","pairAddress":"sol_ex3","baseSymbol":"Mafia","quoteSymbol":"WSOL","priceUsd":0.000003,"liquidityUsd":4600,"fdvUsd":5800 },
+  { "source":"gecko","pairAddress":"sol_ex4","baseSymbol":"Cupsey","quoteSymbol":"WSOL","priceUsd":0.000009,"liquidityUsd":5500,"fdvUsd":6100 },
+  { "source":"gecko","pairAddress":"sol_ex5","baseSymbol":"EPST","quoteSymbol":"WSOL","priceUsd":0.000120,"liquidityUsd":1740000,"fdvUsd":2140000 }
+]

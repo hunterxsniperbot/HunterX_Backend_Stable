@@ -59,4 +59,3 @@ module.exports = function registerStartCommand(bot, services) {
   });
 };
 registerCandidatos(bot);
-registerCandidatos(bot);

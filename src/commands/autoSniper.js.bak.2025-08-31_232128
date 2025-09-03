@@ -41,7 +41,7 @@
 // - Monto por operación dinámico (5–2000) por modo (DEMO/REAL)
 // - Degrada elegante cuando faltan APIs/keys (no rompe)
 
-import * as markets       from '../services/marketsPref.js';     // DexScreener/Birdeye/etc
+import * as markets       from '../services/markets.js';     // DexScreener/Birdeye/etc
 import * as quicknode     from '../services/quicknode.js';    // on-chain opcional
 import * as trading       from '../services/trading.js';      // logTrade/logEvent
 import * as demoBank      from '../services/demoBank.js';     // simulador (si aplica)
@@ -775,7 +775,7 @@ export default function registerAutoSniper(bot, { phantomClient } = {}) {
     }
 
     // Help
-    bot.sendMessage(chatId, 'Uso: <code>/autosniper</code> (=on) | <code>/autosniper off</code> | <code>/autosniper status</code>', { parse_mode:'HTML' });
+    bot.sendMessage(chatId, 'Uso: <code>/autosniper on</code> | <code>off</code> | <code>status</code>', { parse_mode:'HTML' });
   });
 
   // Compatibilidad: /stop para apagar rápido

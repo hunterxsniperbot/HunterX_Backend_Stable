@@ -1,17 +1,20 @@
 import { getFlags } from '../services/flags.js';
+import { demoScanTick } from '../orchestrators/sniperDemo.js';
 
 const TICK_MS = Number(process.env.SNIPER_TICK_MS || 1500);
 let timer = null;
 let tickCount = 0;
 
 async function runScanTick(){
-  // 🔴 Aquí luego llamamos a tu lógica real (ej: markets.preScan()/route/exec).
-  // Por ahora, solo trazamos que el loop corre:
   const f = await getFlags();
-  if (!f.autosniper) return; // safety
+  if (!f.autosniper) return;
   tickCount++;
-  if (tickCount % 10 === 1) {
-    console.log(`⏱️  AutoSniper tick #${tickCount} [mode=${f.mode}]`);
+
+  if (f.mode === 'DEMO'){
+    await demoScanTick(tickCount % 5 === 1); // log cada ~5 ticks
+  } else {
+    // TODO M4bis/M5: aquí enchufarás tu autoSniper REAL (Phantom/Jupiter)
+    if (tickCount % 20 === 1) console.log('⏳ REAL mode placeholder tick…');
   }
 }
 
@@ -24,7 +27,7 @@ export function ensureLoopRunning(){
 }
 
 export function stopLoop(){
-  if (timer) {
+  if (timer){
     clearInterval(timer);
     timer = null;
     console.log('⏹️  AutoSniper loop stopped');

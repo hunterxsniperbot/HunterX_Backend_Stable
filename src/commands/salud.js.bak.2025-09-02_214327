@@ -183,10 +183,12 @@ async function snapshot(){
   data.push(await checkHTTP('TokenSniffer','https://tokensniffer.com'));
   data.push(await checkHTTP('GoPlus',      'https://api.gopluslabs.io'));
   data.push(await checkHTTP('Whale Alert', 'https://api.whale-alert.io'));
+  data.push(await checkHTTP('Solscan',     'https://api.solscan.io/chaininfo'));
   data.push(await checkHTTP('Jupiter',     'https://price.jup.ag/v4/price?ids=SOL'));
   data.push(await checkHTTP('Raydium',     'https://api.raydium.io/pairs?limit=1'));
   data.push(await checkHTTP('CoinGecko',   'https://api.coingecko.com/api/v3/ping'));
   data.push(await checkHTTP('CoinMarketCap','https://pro-api.coinmarketcap.com/v1/cryptocurrency/map'));
+  data.push(await checkHTTP('Discord',     'https://discord.com/api/v10'));
 
   const all = [...infra, ...data];
   const avg = Math.round(all.reduce((a,x)=>a+(x.score||0),0) / Math.max(1, all.length));

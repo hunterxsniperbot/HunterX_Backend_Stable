@@ -1,0 +1,26 @@
+HunterX — M2 (Control Remoto + Salud + Loop) — 2025-08-31 21:57 -0300
+
+Incluye:
+• M1 (DEMO listo)
+  - demoBank: buy/sell DEMO con estado en memoria.
+  - Comandos: /demo_reset, /demo_buy, /demo_sell, /demo_state.
+  - Export a Google Sheets: /registro_export (auto-crear pestaña "Registros").
+
+• M2 (API de control y salud)
+  - server.js (Express):
+    GET  /api/salud (?fast=1)
+    POST /api/autosniper/start
+    POST /api/autosniper/stop
+    GET  /api/autosniper/status
+    GET  /api/wallet
+  - Salud rápida: checks en paralelo + timeouts (SALUD_TIMEOUT_MS) + deadline (SALUD_DEADLINE_MS).
+  - Seguridad: header x-hx-key (N8N_WEBHOOK_KEY) para start/stop.
+  - Estado persistente: var/flags.json (mode, autosniper, updatedAt).
+
+• Loop AutoSniper (base)
+  - src/loops/autoSniperLoop.js (SNIPER_TICK_MS=1500ms)
+  - Integrado: /start enciende loop, /stop lo apaga.
+
+Notas:
+- Próximo M4: conectar runScanTick() con autoSniper.js (pre-scan DexScreener + filtros) en DEMO.
+- .env: TELEGRAM_BOT_TOKEN, GOOGLE_APPLICATION_CREDENTIALS, GOOGLE_SHEETS_ID, N8N_WEBHOOK_KEY, HELIUS_RPC_URL/QUICKNODE_URL (opc), SALUD_TIMEOUT_MS, SALUD_DEADLINE_MS, SNIPER_TICK_MS.
