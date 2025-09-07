@@ -1,3 +1,4 @@
+import fs from 'fs';
 import express from 'express';
 import bodyParser from 'body-parser';
 
@@ -23,6 +24,17 @@ app.get('/api/autosniper/status', async (_req, res) => {
 });
 
 const PORT = Number(process.env.API_PORT || 3000);
+// --- Flags state (diagnóstico) ---
+app.get('/api/flags', (_req,res) => {
+  try {
+    const allow    = fs.existsSync("flags/ALLOW_AUTOSNIPER");
+    const demoOnly = fs.existsSync("flags/DEMO_ONLY");
+    res.json({ ok:true, allowAutosniper: allow, demoOnly });
+  } catch(e){
+    res.status(500).json({ ok:false, error:String(e?.message||e) });
+  }
+});
+
 // app.listen(PORT, '0.0.0.0', () => {
   console.log(`🌐 API escuchando en http://0.0.0.0:${PORT}`);
 });
@@ -83,5 +95,27 @@ app.get('/api/salud_fast', async (_req,res) => {
     res.json(arr);
   } catch(e) {
     res.status(500).json([{ name:'salud_fast', group:'infra', status:'DOWN', error:String(e?.message||e)}]);
+  }
+});
+
+// --- Flags state (para diagnóstico rápido) ---
+app.get('/api/flags', (_req,res) => {
+  try {
+    const allow    = fs.existsSync('flags/ALLOW_AUTOSNIPER');
+    const demoOnly = fs.existsSync('flags/DEMO_ONLY');
+    res.json({ ok:true, allowAutosniper: allow, demoOnly });
+  } catch(e){
+    res.status(500).json({ ok:false, error:String(e?.message||e) });
+  }
+});
+
+// --- Flags state (diagnóstico) ---
+app.get('/api/flags', (_req,res) => {
+  try {
+    const allow    = fs.existsSync('flags/ALLOW_AUTOSNIPER');
+    const demoOnly = fs.existsSync('flags/DEMO_ONLY');
+    res.json({ ok:true, allowAutosniper: allow, demoOnly });
+  } catch(e){
+    res.status(500).json({ ok:false, error:String(e?.message||e) });
   }
 });
