@@ -705,8 +705,7 @@ export default function registerAutoSniper(bot, { phantomClient } = {}) {
         // Iniciar loop periódico (trackeado) con anti-reentrancia
         bot._sniperLoops = bot._sniperLoops || {};
         bot._running     = bot._running || {};
-        console.log("▶️  AutoSniper loop started (interval="+ENV.SCAN_MS+"ms)");
-      bot._sniperLoops[uid] = _trackInterval(
+        bot._sniperLoops[uid] = _trackInterval(
           bot, uid,
           setInterval(() => {
             if (bot._running && bot._running[uid]) return; // anti-reentrancia
@@ -744,7 +743,7 @@ export default function registerAutoSniper(bot, { phantomClient } = {}) {
       if (bot._running && bot._running[uid]) delete bot._running[uid];
       state.setSniperOn?.(uid, false).catch(()=>{});
       _clearTracked(bot, uid); // mata sleeps/async/intervals
-      await bot.sendMessage(chatId, '<b>🛑 Sniper OFF</b>', { parse_mode:'HTML' });
+      return bot.sendMessage(chatId, '<b>🛑 Sniper OFF</b>', { parse_mode:'HTML' });
     }
 
     // STATUS — salida en HTML (sin MarkdownV2)

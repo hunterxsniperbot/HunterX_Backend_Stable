@@ -1,3 +1,5 @@
+import { registerDemoCommandsUI } from "./src/bot/demoCommands.ui.js";
+import registerCandidatos from './src/commands/candidatos.js';
 // import { wireCandidatos } from "./src/bot/wireCandidatos.js";
 import "./src/boot/ipv4.js";
 // index.js — Entry point HunterX (ESM, robusto)
@@ -147,3 +149,24 @@ if (!TOKEN) {
 
 // === wire /candidatos ===
 try { wireCandidatos(bot); } catch {}
+
+// === Registrar /candidatos (card paginada)
+try { registerCandidatos(bot); } catch(e) { console.error('candidatos reg failed', e); }
+
+// === [UI PRO DEMO HOOK] — registrar al FINAL para pisar listeners viejos ===
+try {
+  if (process.env.DEMO_UI_PRO === '1') {
+    // Evitar doble registro si recargas en caliente
+    if (!globalThis.__HX_UI_PRO_ONCE) globalThis.__HX_UI_PRO_ONCE = new WeakSet();
+    if (!globalThis.__HX_UI_PRO_ONCE.has(bot)) {
+      registerDemoCommandsUI(bot);
+      console.log('✅ DEMO UI PRO activas: /demo_buy /demo_sell con plantillas + teclado');
+      globalThis.__HX_UI_PRO_ONCE.add(bot);
+    }
+  } else {
+    console.log('ℹ️ DEMO_UI_PRO=0 — UI PRO desactivada');
+  }
+} catch (e) {
+  console.error('❌ DEMO UI PRO error:', e?.message || e);
+}
+// === [FIN UI PRO DEMO HOOK] ===

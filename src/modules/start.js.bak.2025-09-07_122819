@@ -1,4 +1,3 @@
-import { registerDemoCommandsUI } from "../bot/demoCommands.ui.js";
 import { registerM4Broadcaster } from "../commands/m4Broadcaster.js";
 import { registerDemoBuyShim } from '../bot/demoBuyShim.js';
 import { findM4Candidates } from '../orchestrators/m4Candidates.js';
@@ -143,6 +142,3 @@ if (!bot.__wiredInlineBasics) {
   });
 }
 // =============================================================
-
-// UI PRO opcional
-if (process.env.DEMO_UI_PRO==='1') registerDemoCommandsUI(bot);

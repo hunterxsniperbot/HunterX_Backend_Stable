@@ -1,79 +1,159 @@
-/**
- * /candidatos [N]
- * Lista Top-N pools (por liquidez) desde marketsPref, con datos básicos.
- * No ejecuta compras; sirve para validar el feed y manualmente disparar /demo_buy.
- */
-import { getSolanaPairs } from '../services/marketsPref.js';
+import * as gecko from '../services/candidatesGecko.js';
+import * as pref  from '../services/marketsPref.js';
 
-function fmtUsd(n){ if(n==null) return '-'; return '$' + Number(n).toLocaleString('en-US', {maximumFractionDigits:2}); }
-function cut(s){ return String(s||'').trim().replace(/\s+/g,' ').slice(0,16); }
+export default function registerCandidatos(bot) {
+  console.log('✅ Handler cargado: candidatos.js');
 
-export function registerCandidatos(bot){
-  bot.onText(/^\/candidatos(?:\s+(\d+))?$/i, async (msg, m) => {
+  const TTL_SEC   = Number(process.env.CAND_TTL_SEC   || 25);
+  const PAGE_SIZE = Number(process.env.CAND_PAGE_SIZE || 3);
+  const MAX_ITEMS = Number(process.env.CAND_TOP       || 9);
+  const MIN_LIQ   = Number(process.env.CAND_MIN_LIQ_USD || 15000);
+  const MAX_FDV   = Number(process.env.CAND_MAX_FDV_USD || 300000);
+
+  const CACHE = new Map(); // uid -> {ts, items, pages, page, msgId}
+
+  const esc = (s='') => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const money = (v) => {
+    const x = Number(v); if (!isFinite(x)) return '—';
+    if (x >= 1e6) return '$'+(x/1e6).toFixed(2)+'M';
+    if (x >= 1e3) return '$'+(x/1e3).toFixed(1)+'k';
+    return '$'+x.toFixed(6).replace(/0+$/,'').replace(/\.$/,'');
+  };
+  const fmtUSD = (v) => {
+    const x = Number(v); if (!isFinite(x)) return '—';
+    if (x >= 1e6) return '$'+(x/1e6).toFixed(2)+'M';
+    if (x >= 1e3) return '$'+(x/1e3).toFixed(1)+'k';
+    return '$'+x.toFixed(2);
+  };
+  const linkDS = (pair) => `https://dexscreener.com/solana/${pair}`;
+  const linkGk = (pair) => `https://www.geckoterminal.com/solana/pools/${pair}`;
+  const chunk  = (a,n)=>{const o=[];for(let i=0;i<a.length;i+=n)o.push(a.slice(i,i+n));return o;};
+
+  async function getCandidates() {
+    try {
+      const list = await gecko.discoverTop({ minLiqUsd: MIN_LIQ, maxFdvUsd: MAX_FDV, top: MAX_ITEMS });
+      if (Array.isArray(list) && list.length) return list;
+    } catch {}
+    try {
+      const pairs = await pref.getSolanaPairs({ limit: MAX_ITEMS * 2 });
+      const norm = (pairs||[]).map(p => ({
+        source: p.source || 'pref',
+        pairAddress: p.pairAddress,
+        sym: (p.baseSymbol||p.sym||'?').trim(),
+        quote: (p.quoteSymbol||p.quote||'SOL').trim(),
+        priceUsd: Number(p.priceUsd || 0),
+        liqUsd: Number(p.liquidityUsd || 0),
+        fdvUsd: Number(p.fdvUsd || 0),
+      })).filter(x => x.liqUsd >= MIN_LIQ && x.fdvUsd > 0 && x.fdvUsd <= MAX_FDV)
+        .slice(0, MAX_ITEMS);
+      return norm;
+    } catch {}
+    return [];
+  }
+
+  function renderPage(items, page, totalPages) {
+    const lines = [];
+    lines.push('🎯 <b>Top Candidatos</b> — pag ' + (page+1) + '/' + totalPages);
+    lines.push('Filtros: liq ≥ ' + fmtUSD(MIN_LIQ) + ' · FDV ≤ ' + fmtUSD(MAX_FDV));
+    lines.push('');
+    items.forEach((t,i) => {
+      const name = esc(t.sym || 'Token');
+      const px   = money(t.priceUsd);
+      const liq  = fmtUSD(t.liqUsd);
+      const fdv  = fmtUSD(t.fdvUsd);
+      const pair = esc(t.pairAddress||'');
+      lines.push(`${i+1}. <b>$${name}</b> <i>(${esc(t.source)})</i>\n💵 Precio: ${px}\n💧 Liq: ${liq}\n🏷️ FDV: ${fdv}\n<a href="${linkDS(pair)}">DexScreener</a> · <a href="${linkGk(pair)}">Gecko</a>\n`);
+    });
+    lines.push('— Card informativa: el Sniper decide aparte.');
+    return lines.join('\n');
+  }
+  function kbNav(page, totalPages) {
+    const row=[];
+    if (page>0) row.push({text:'« Anterior', callback_data:'cand:prev'});
+    row.push({text:'🔄 Refrescar', callback_data:'cand:refresh'});
+    if (page<totalPages-1) row.push({text:'Siguiente »', callback_data:'cand:next'});
+    return { inline_keyboard:[row] };
+  }
+
+  // (eliminar cualquier listener previo muy amplio)
+  try {
+    bot.removeTextListener?.(/^\/candidatos$/i);
+    bot.removeTextListener?.(/^\s*\/candidatos.*$/i);
+  } catch {}
+
+  bot.onText(/^\s*\/candidatos(?:\s+(\d+|refresh))?\s*$/i, async (msg, m) => {
+    const uid    = String(msg.from.id);
     const chatId = msg.chat.id;
-    const topN = Math.max(1, Math.min(10, Number(m?.[1] || 5)));
+    const arg    = (m && m[1]) ? String(m[1]).toLowerCase() : '';
+    const now    = Date.now();
+    const slot   = CACHE.get(uid) || {};
 
-    try{
-      const pairs = await getSolanaPairs({ limit: Math.max(20, topN*4) });
+    const needFetch = arg === 'refresh' || !slot.ts || (now - slot.ts) > TTL_SEC*1000;
+    if (needFetch) {
+      const items = await getCandidates();
+      const pages = ((arr, n)=>{const o=[];for(let i=0;i<arr.length;i+=n)o.push(arr.slice(i,i+n));return o;})(items, PAGE_SIZE);
+      CACHE.set(uid, { ts: now, items, pages, page: 0, msgId: slot.msgId||null });
+    } else {
+      CACHE.set(uid, { ...slot });
+    }
 
-      // Filtros mínimos para probar (ajustables luego)
-      const minLiq = Number(process.env.MIN_LIQ_USD || 10000);   // $10k por defecto
-      const maxFdv = Number(process.env.MAX_FDV_USD || 5_000_000); // $5M por defecto
+    const curr = CACHE.get(uid);
+    const totalPages = curr.pages?.length || 0;
 
-      const cand = (pairs || [])
-        .filter(p => (p.liquidityUsd ?? 0) >= minLiq)
-        .filter(p => (p.fdvUsd == null || p.fdvUsd <= maxFdv))
-        .slice(0, 100);
+    let text, kb;
+    if (!totalPages) {
+      text = '👀 <b>Candidatos</b>\nNo hay items que cumplan filtros ahora.';
+      kb   = { inline_keyboard: [[{text:'🔄 Refrescar', callback_data:'cand:refresh'}]] };
+    } else {
+      const page = Math.max(0, Math.min(curr.page||0, totalPages-1));
+      text = renderPage(curr.pages[page], page, totalPages);
+      kb   = kbNav(page, totalPages);
+    }
 
-      if (!cand.length) {
-        return bot.sendMessage(chatId, '⚠️ Sin candidatos con filtros mínimos. Probá más tarde o baja filtros.');
-      }
-
-      // Orden simple por liquidez descendente
-      cand.sort((a,b)=> (b.liquidityUsd||0) - (a.liquidityUsd||0));
-
-      const top = cand.slice(0, topN);
-
-      const lines = ['<b>🎯 Candidatos (Top '+topN+')</b> (liq≥'+fmtUsd(minLiq)+', FDV≤'+fmtUsd(maxFdv)+')\n'];
-      const kbs = [];
-
-      for (let i=0;i<top.length;i++){
-        const p = top[i];
-        const sym = cut(`${p.baseSymbol}/${p.quoteSymbol}`);
-        const liq = fmtUsd(p.liquidityUsd);
-        const fdv = fmtUsd(p.fdvUsd);
-        const px  = p.priceUsd == null ? '-' : ('$'+p.priceUsd.toPrecision(6));
-
-        const ds = p.pairAddress ? `https://dexscreener.com/solana/${p.pairAddress}` : null;
-
-        lines.push(`${i+1}. <b>${sym}</b>  liq ${liq}  FDV ${fdv}  px ${px}`);
-
-        // Te dejo atajos: abrir DexScreener + textos útiles para copiar/pegar /demo_buy
-        const row = [];
-        if (ds) row.push({ text:'📊 DexScreener', url: ds });
-        row.push({ text:'💜 /demo_buy 20', callback_data: `cand:hint:${i}:20` });
-        row.push({ text:'💜 /demo_buy 50', callback_data: `cand:hint:${i}:50` });
-        kbs.push(row);
-      }
-
-      const kb = { inline_keyboard: kbs };
-      await bot.sendMessage(chatId, lines.join('\n'), { parse_mode:'HTML', disable_web_page_preview:true, reply_markup: kb });
-    } catch(e){
-      bot.sendMessage(chatId, '❌ candidatos error: '+(e?.message||e));
+    if (!curr.msgId) {
+      const m2 = await bot.sendMessage(chatId, text, { parse_mode:'HTML', reply_markup: kb, disable_web_page_preview:true });
+      curr.msgId = m2?.message_id;
+      CACHE.set(uid, curr);
+    } else {
+      await bot.editMessageText(text, { chat_id: chatId, message_id: curr.msgId, parse_mode:'HTML', reply_markup: kb, disable_web_page_preview:true });
     }
   });
 
-  // Callbacks de “hint”: sólo mandan un mensaje con el texto /demo_buy listo para enviar
-  bot.on('callback_query', async (q)=>{
+  bot.on('callback_query', async (q) => {
     const data = String(q.data||'');
-    if (!data.startsWith('cand:hint:')) return;
+    if (!data.startsWith('cand:')) return;
+    const uid    = String(q.from.id);
     const chatId = q.message?.chat?.id;
-    try{
-      const [, , idx, amt] = data.split(':'); // cand:hint:<i>:<amount>
-      await bot.answerCallbackQuery(q.id, { text:'Pegá y enviá el comando 😉' });
-      await bot.sendMessage(chatId, `/demo_buy ${amt}`);
-    } catch(e){
-      try{ await bot.answerCallbackQuery(q.id, { text: 'Error: '+(e?.message||e) }); }catch{}
+    if (!chatId) return;
+
+    const curr = CACHE.get(uid);
+    if (!curr){ try{ await bot.answerCallbackQuery(q.id,{text:'Sin cache; usá /candidatos'});}catch{}; return; }
+
+    if (data==='cand:refresh'){
+      const items = await getCandidates();
+      curr.ts = Date.now();
+      curr.items = items;
+      curr.pages = ((arr,n)=>{const o=[];for(let i=0;i<arr.length;i+=n)o.push(arr.slice(i,i+n));return o;})(items, PAGE_SIZE);
+      curr.page = 0;
+    } else if (data==='cand:next'){
+      curr.page = Math.min((curr.page||0)+1, Math.max(0,(curr.pages?.length||1)-1));
+    } else if (data==='cand:prev'){
+      curr.page = Math.max(0, (curr.page||0)-1);
     }
+
+    const totalPages = curr.pages?.length || 0;
+    let text, kb;
+    if (!totalPages) {
+      text = '👀 <b>Candidatos</b>\nNo hay items que cumplan filtros ahora.';
+      kb   = { inline_keyboard: [[{text:'🔄 Refrescar', callback_data:'cand:refresh'}]] };
+    } else {
+      const page = Math.max(0, Math.min(curr.page||0, totalPages-1));
+      text = renderPage(curr.pages[page], page, totalPages);
+      kb   = kbNav(page, totalPages);
+    }
+
+    await bot.editMessageText(text, { chat_id: chatId, message_id: curr.msgId, parse_mode:'HTML', reply_markup: kb, disable_web_page_preview: true });
+    try { await bot.answerCallbackQuery(q.id).catch(()=>{}); } catch {}
+    CACHE.set(uid, curr);
   });
 }
