@@ -1,7 +1,5 @@
-import "./server.js";
-import { wireCandidatos } from "./src/bot/wireCandidatos.js";
+// import { wireCandidatos } from "./src/bot/wireCandidatos.js";
 import "./src/boot/ipv4.js";
-import './server.js';
 // index.js — Entry point HunterX (ESM, robusto)
 // 1) ENV + sane defaults
 import "dotenv/config";
@@ -69,19 +67,18 @@ if (!TOKEN) {
   // Menú slash
   async function setSlashMenu() {
     const commands = [
-      { command: "salud",     description: "Conexiones activas" },
-      { command: "autosniper",description: "Activar sniper automático" },
-      { command: "real",      description: "Modo trading REAL" },
-      { command: "demo",      description: "Modo DEMO (simulación)" },
-      { command: "stop",      description: "Detener sniper" },
-      { command: "wallet",    description: "Ver posiciones abiertas" },
-      { command: "registro",  description: "Ver posiciones cerradas" },
-      { command: "discord",   description: "Tendencias en Discord" },
-      { command: "ajustes",   description: "Configurar sniper" },
-      { command: "mensaje",   description: "Ayuda / panel" }
-    ];
+  { command: "salud",     description: "Conexiones activas" },
+  { command: "autosniper",description: "Activar sniper automático" },
+  { command: "real",      description: "Modo (Trading real)" },
+  { command: "demo",      description: "Modo (simulación)" },
+  { command: "stop",      description: "Detener sniper" },
+  { command: "wallet",    description: "Ver posiciones abiertas" },
+  { command: "registro",  description: "Ver posiciones cerradas" },
+  { command: "ajustes",   description: "Configurar sniper" },
+  { command: "mensaje",   description: "Ayuda" }
+];
     try {
-      await bot.setMyCommands(commands);
+      // if (process.env.SET_COMMANDS_ON_BOOT==="1") if (process.env.SET_COMMANDS_ON_BOOT==="1") if (process.env.SET_COMMANDS_ON_BOOT==="1") await bot.setMyCommands(commands, { scope: { type: "default" } });
       console.log("🟦 [Slash] comandos seteados");
     } catch (e) {
       console.error("❌ setMyCommands:", e?.message || e);
@@ -120,7 +117,16 @@ if (!TOKEN) {
     try { registerSalud(bot);                                        console.log("✅ salud.js"); }           catch(e){ console.error("❌ salud:", e?.message||e); }
     try { registerDemoBuy(bot);                                      console.log("✅ demo_buy.js"); }        catch(e){ console.error("❌ demo_buy:", e?.message||e); }
 
-    await setSlashMenu();
+    // NUEVO: comandos inline
+    try { 
+      const { default: registerComandosInline } = await import("./src/commands/comandos_inline.js"); 
+      registerComandosInline(bot); 
+      console.log("✅ comandos_inline.js"); 
+    } catch(e){ 
+      console.error("❌ comandos_inline:", e?.message||e); 
+    }
+
+    // (menu) deshabilitado: usar BotFather
     global.__HX_HANDLERS_REGISTERED__ = true;
     console.log("🤖 HunterX Bot arrancado y escuchando comandos");
   } else {
@@ -138,7 +144,6 @@ if (!TOKEN) {
 }
 
 // Fin: si sólo querés API (sin token), ya quedó arriba con /api/salud
-
 
 // === wire /candidatos ===
 try { wireCandidatos(bot); } catch {}

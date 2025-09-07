@@ -1,4 +1,3 @@
-import * as feeds from '../services/feeds.js';
 /* =====================================================================
    HUNTER X — autoSniper.js
    Build Tag: HX-A12 (Anti-FOMO) — v2025-08-19
@@ -41,26 +40,14 @@ import * as feeds from '../services/feeds.js';
 // - Shadow trading: en REAL, registra también DEMO_SOMBRA (logging)
 // - Monto por operación dinámico (5–2000) por modo (DEMO/REAL)
 // - Degrada elegante cuando faltan APIs/keys (no rompe)
-import fs from 'fs';
-
-import { findM4Candidates } from '../orchestrators/m4Candidates.js';
 
 import * as markets       from '../services/marketsPref.js';     // DexScreener/Birdeye/etc
-
 import * as quicknode     from '../services/quicknode.js';    // on-chain opcional
-
 import * as trading       from '../services/trading.js';      // logTrade/logEvent
-
 import * as demoBank      from '../services/demoBank.js';     // simulador (si aplica)
-
 import * as profileStore  from '../services/profile.js';      // perfiles (si aplica)
-
 import * as supabase      from '../services/supabase.js';     // si querés hooks externos
-
 import * as state        from '../services/state.js';     // persistencia simple ON/OFF
-
-const allow = fs.existsSync("flags/ALLOW_AUTOSNIPER");
-
 
 // ———————————————————————————————————————————————————————————
 // Defaults desde .env (todo opcional, con fallback sensato)
@@ -563,16 +550,6 @@ async function manageExits({ bot, uid, mode, store, p, cur, phantomClient }) {
 // LOOP de escaneo y ejecución por usuario
 // ———————————————————————————————————————————————————————————
 async function loopForUser(bot, uid, { phantomClient }) {
-  // --- Kill-switch y DEMO_ONLY flags ---
-  try {
-    allow = fs.existsSync("flags/ALLOW_AUTOSNIPER");
-    if (!allow) return;
-    if (fs.existsSync("flags/DEMO_ONLY")) {
-      bot.realMode = bot.realMode || {};
-      bot.realMode[uid] = false;
-    }
-  } catch {}
-
   // GUARDAS: si se apagó o fue abortado, no corremos nada
   if (!bot._sniperOn?.[uid]) return;
   const _sess = (_getSess(bot, uid)) || null;

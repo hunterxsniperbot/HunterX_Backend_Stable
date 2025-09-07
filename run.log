@@ -32,3 +32,276 @@ HTTP boot: undici keep-alive activado
 🤖 HunterX Bot arrancado y escuchando comandos
 ✅ candidatos.js (dinámico + fallback)
 🔌 wireCandidatos OK
+file:///data/data/com.termux/files/home/HunterX_Backend_Stable/src/bot/wireCandidatos.js:1
+import registerCandidatos from '../commands/candidatos.js';
+       ^^^^^^^^^^^^^^^^^^
+SyntaxError: The requested module '../commands/candidatos.js' does not provide an export named 'default'
+    at #_instantiate (node:internal/modules/esm/module_job:254:21)
+    at async ModuleJob.run (node:internal/modules/esm/module_job:363:5)
+    at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:669:26)
+    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5)
+
+Node.js v24.6.0
+🌐 undici: IPv4 forced (family=4)
+HTTP boot: undici keep-alive activado
+🛰️ [TG] Modo: POLLING
+🔧 Iniciando bot…
+✅ Handler cargado: ajustes.js (HX-A08)
+✅ ajustes.js
+✅ Handler cargado: sniperReset.js
+✅ sniperReset.js
+✅ autoSniper.js
+✅ wallet.js
+✅ Handler cargado: registro.js (HX-A07)
+✅ registro.js
+✅ Handler cargado: mensaje.js (ayuda avanzada)
+✅ mensaje.js
+ℹ️  wallet_sell: deshabilitado (WALLET_SELL_VIA_HANDLER!=1)
+✅ wallet_sell.js
+✅ Handler cargado: status.js (HX-A06)
+✅ status.js
+✅ Handler cargado: initSheets.js
+✅ initSheets.js
+✅ Handler cargado: pick.js
+✅ pick.js
+✅ Handler cargado: mode.js (HX-A05)
+✅ mode.js
+✅ salud.js
+✅ DEMO: registrando /demo_reset /demo_buy /demo_state /demo_sell /registro_export
+✅ demo_buy.js
+🌐 API escuchando en http://0.0.0.0:3000
+🌐 API escuchando en http://0.0.0.0:3030
+🗂️ [mode] RealMode map cargado (persistencia)
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+❌ setMyCommands: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🤖 HunterX Bot arrancado y escuchando comandos
+🌐 [polling] aviso: EFATAL: Error: connect ECONNABORTED 149.154.167.220:443
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 [polling] aviso: EFATAL: Error: getaddrinfo ENOTFOUND api.telegram.org
+🌐 undici: IPv4 forced (family=4)
+HTTP boot: undici keep-alive activado
+🛰️ [TG] Modo: POLLING
+🔧 Iniciando bot…
+✅ Handler cargado: ajustes.js (HX-A08)
+✅ ajustes.js
+✅ Handler cargado: sniperReset.js
+✅ sniperReset.js
+✅ autoSniper.js
+✅ wallet.js
+✅ Handler cargado: registro.js (HX-A07)
+✅ registro.js
+✅ Handler cargado: mensaje.js (ayuda avanzada)
+✅ mensaje.js
+ℹ️  wallet_sell: deshabilitado (WALLET_SELL_VIA_HANDLER!=1)
+✅ wallet_sell.js
+✅ Handler cargado: status.js (HX-A06)
+✅ status.js
+✅ Handler cargado: initSheets.js
+✅ initSheets.js
+✅ Handler cargado: pick.js
+✅ pick.js
+✅ Handler cargado: mode.js (HX-A05)
+✅ mode.js
+✅ salud.js
+✅ DEMO: registrando /demo_reset /demo_buy /demo_state /demo_sell /registro_export
+✅ demo_buy.js
+🌐 API escuchando en http://0.0.0.0:3000
+🌐 API escuchando en http://0.0.0.0:3030
+🗂️ [mode] RealMode map cargado (persistencia)
+🟦 [Slash] comandos seteados
+🤖 HunterX Bot arrancado y escuchando comandos
+🌐 undici: IPv4 forced (family=4)
+HTTP boot: undici keep-alive activado
+🛰️ [TG] Modo: POLLING
+🔧 Iniciando bot…
+✅ Handler cargado: ajustes.js (HX-A08)
+✅ ajustes.js
+✅ Handler cargado: sniperReset.js
+✅ sniperReset.js
+✅ autoSniper.js
+✅ wallet.js
+✅ Handler cargado: registro.js (HX-A07)
+✅ registro.js
+✅ Handler cargado: mensaje.js (ayuda avanzada)
+✅ mensaje.js
+ℹ️  wallet_sell: deshabilitado (WALLET_SELL_VIA_HANDLER!=1)
+✅ wallet_sell.js
+✅ Handler cargado: status.js (HX-A06)
+✅ status.js
+✅ Handler cargado: initSheets.js
+✅ initSheets.js
+✅ Handler cargado: pick.js
+✅ pick.js
+✅ Handler cargado: mode.js (HX-A05)
+✅ mode.js
+✅ salud.js
+✅ DEMO: registrando /demo_reset /demo_buy /demo_state /demo_sell /registro_export
+✅ demo_buy.js
+🌐 API escuchando en http://0.0.0.0:3000
+🌐 API escuchando en http://0.0.0.0:3030
+🗂️ [mode] RealMode map cargado (persistencia)
+🟦 [Slash] comandos seteados
+🤖 HunterX Bot arrancado y escuchando comandos
+🌐 undici: IPv4 forced (family=4)
+HTTP boot: undici keep-alive activado
+🛰️ [TG] Modo: POLLING
+🔧 Iniciando bot…
+✅ Handler cargado: ajustes.js (HX-A08)
+✅ ajustes.js
+✅ Handler cargado: sniperReset.js
+✅ sniperReset.js
+✅ autoSniper.js
+✅ wallet.js
+✅ Handler cargado: registro.js (HX-A07)
+✅ registro.js
+✅ Handler cargado: mensaje.js (ayuda avanzada)
+✅ mensaje.js
+ℹ️  wallet_sell: deshabilitado (WALLET_SELL_VIA_HANDLER!=1)
+✅ wallet_sell.js
+✅ Handler cargado: status.js (HX-A06)
+✅ status.js
+✅ Handler cargado: initSheets.js
+✅ initSheets.js
+✅ Handler cargado: pick.js
+✅ pick.js
+✅ Handler cargado: mode.js (HX-A05)
+✅ mode.js
+✅ salud.js
+✅ DEMO: registrando /demo_reset /demo_buy /demo_state /demo_sell /registro_export
+✅ demo_buy.js
+🌐 API escuchando en http://0.0.0.0:3000
+🌐 API escuchando en http://0.0.0.0:3030
+🗂️ [mode] RealMode map cargado (persistencia)
+🟦 [Slash] comandos seteados
+🤖 HunterX Bot arrancado y escuchando comandos
+🌐 undici: IPv4 forced (family=4)
+HTTP boot: undici keep-alive activado
+🛰️ [TG] Modo: POLLING
+🔧 Iniciando bot…
+✅ Handler cargado: ajustes.js (HX-A08)
+✅ ajustes.js
+✅ Handler cargado: sniperReset.js
+✅ sniperReset.js
+✅ autoSniper.js
+✅ wallet.js
+✅ Handler cargado: registro.js (HX-A07)
+✅ registro.js
+✅ Handler cargado: mensaje.js (ayuda avanzada)
+✅ mensaje.js
+ℹ️  wallet_sell: deshabilitado (WALLET_SELL_VIA_HANDLER!=1)
+✅ wallet_sell.js
+✅ Handler cargado: status.js (HX-A06)
+✅ status.js
+✅ Handler cargado: initSheets.js
+✅ initSheets.js
+✅ Handler cargado: pick.js
+✅ pick.js
+✅ Handler cargado: mode.js (HX-A05)
+✅ mode.js
+✅ salud.js
+✅ DEMO: registrando /demo_reset /demo_buy /demo_state /demo_sell /registro_export
+✅ demo_buy.js
+🌐 API escuchando en http://0.0.0.0:3000
+🌐 API escuchando en http://0.0.0.0:3030
+🗂️ [mode] RealMode map cargado (persistencia)
+🟦 [Slash] comandos seteados
+🤖 HunterX Bot arrancado y escuchando comandos
