@@ -47,3 +47,4 @@ secrets/
 var/
 
 src/**/*.bak.*
+*.bak.*

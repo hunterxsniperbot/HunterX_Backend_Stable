@@ -26,7 +26,7 @@ async function announceDemoBuy(bot, chatId, uid, info) {
   const usd     = Number(info.amountUsd ?? info.size ?? 0);
   const price   = (info.priceUsd != null) ? Number(info.priceUsd) : null;
 
-  // Links: SOL por defecto (podrás sustituir por mint/pair reales cuando los tengamos)
+  // Links: SOL por defecto (en DEMO)
   const mintSOL = "So11111111111111111111111111111111111111112";
   const linkDex  = 'https://dexscreener.com/solana';
   const linkJup  = 'https://jup.ag/swap/SOL-USDC';
@@ -38,16 +38,16 @@ async function announceDemoBuy(bot, chatId, uid, info) {
 
   const lines = [
     "✅ <b>COMPRA AUTOMÁTICA EJECUTADA</b>",
-    "🧾 <b>Trade ID:</b> #" + tradeId,
-    "🪙 <b>Token:</b> $" + escHtml(sym) + " (So1111…)",
+    "🧾 <b>Trade ID:</b> #"+tradeId,
+    "🪙 <b>Token:</b> $"+sym+" (So1111…)",
     "🔗 <b>Ruta:</b> Raydium • <b>Slippage:</b> 50 bps • <b>Fees/Gas:</b> ~0.01",
-    "💵 <b>Invertido:</b> " + usd.toFixed(2) + " USD (0.000000 SOL)  " + (price!=null ? "🎯 <b>Entrada:</b> " + price.toFixed(4) + " USD" : ""),
+    "💵 <b>Invertido:</b> "+usd.toFixed(2)+" USD (0.000000 SOL)  " + (price!=null ? "🎯 <b>Entrada:</b> "+price.toFixed(4)+" USD" : ""),
     "🛡️<b>Guardas:</b>",
     "- Honeypot ✅",
     "• Liquidez bloqueada 🔒",
     "• Propiedad renunciada 🗝️",
     "• Datos desactualizados ✅",
-    "⏱️ <b>Hora:</b> " + ts,
+    "⏱️ <b>Hora:</b> "+ ts,
     "<b>Enlaces rápidos</b> " +
       `<a href="${linkDex}">DexScreener</a> | ` +
       `<a href="${linkJup}">Jupiter</a> | ` +
@@ -57,13 +57,40 @@ async function announceDemoBuy(bot, chatId, uid, info) {
   ];
   const html = lines.join("\n");
 
-  await bot.sendMessage(chatId, html, {
+  const res = await bot.sendMessage(chatId, html, {
     parse_mode: "HTML",
     disable_web_page_preview: true,
     reply_markup: renderTradeKeyboard(uid, tradeId),
   });
-}
 
+  // Guardamos mapping para poder operar PnL y ventas
+  bot._hxMsgByKey  = bot._hxMsgByKey  || {};
+  bot._hxTradeInfo = bot._hxTradeInfo || {};
+  const k = `${uid}:${tradeId}`;
+  bot._hxMsgByKey[k] = { chatId, message_id: res.message_id };
+
+  const _entry = price ?? 213.90;
+  const _amt   = usd;
+  const _qty   = (_entry>0) ? (_amt / _entry) : 0;
+
+  /* HX:init rem fields */
+  bot._hxTradeInfo[k] = {
+    ts: ts,
+    tradeId,
+    symbol: sym,
+    mint: mintSOL,
+    amountUsd: _amt,           // monto original
+    entryUsd: _entry,
+    qtyEntry: _qty,            // cantidad teórica a precio de entrada
+    // Acumuladores ventas (para promedio de salida y pnl realizado)
+    qtySoldCum: 0,
+    soldUsdCum: 0,
+    // Remanente (USD y %)
+    remUsd: _amt,
+    remPct: 100
+  
+  };
+}
 /* ==== Registro de comandos ==== */
 export default function registerDemoCmds(bot) {
   // /demo_reset
