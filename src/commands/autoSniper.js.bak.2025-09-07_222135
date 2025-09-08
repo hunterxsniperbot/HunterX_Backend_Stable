@@ -569,7 +569,7 @@ async function loopForUser(bot, uid, { phantomClient }) {
   bot._lastTick[uid] = Date.now();
 try {
   const res = await maybeAutoBuyDemo(bot, uid, { demoBuyOnce });
-  if (res && res.ok) { await announceAutoBuy(bot, uid, res); }
+  if (res && res.ok) { announceAutoBuy(bot, uid, res); }
 if (res && res.ok) {
     console.log(`[M4] DEMO buy ${res.symbol} $${res.size} liq=$${res.liq} fdv=$${res.fdv}`);
     if (typeof announceAutoBuy === "function") announceAutoBuy(bot, uid, res);
@@ -903,104 +903,86 @@ const lines = [
 // Formato EXACTO pedido (HTML), con botones PnL y 25/50/75/100.
 // === HunterX — announceAutoBuy (COMPRA) ===
 // Formato exacto pedido (HTML). "TP/SL/Cooldown" y "buy/scam score" son condicionales.
-// --- [HX] DEMO autobuy notifier (HTML) — formato exacto + links reales + botones
-const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
-
-export async function announceAutoBuy(bot, uid, info) {
+function announceAutoBuy(bot, uid, info) {
   try {
-    const chatId =
-      (bot._notifyChatByUid && bot._notifyChatByUid[uid])
-        ? bot._notifyChatByUid[uid]
-        : Number(uid);
+    const chatId   = (bot._notifyChatByUid && bot._notifyChatByUid[uid]) ? bot._notifyChatByUid[uid] : Number(uid);
+    const t        = info.trade || {};
+    const tradeId  = String(t.id || t.tradeId || ("demo-" + Date.now()));
+    const sym      = String(info.symbol || t.token || "—").trim();
+    const mint     = String(t.mint || "So11111111111111111111111111111111111111112");
+    const mintShort= mint.slice(0,6) + "…";
 
-    const t         = info.trade || {};
-    const tradeId   = t.id ? String(t.id) : ("demo-" + Date.now());
-    const sym       = String(info.symbol || t.token || "-").toUpperCase().trim();
-    const sizeUsd   = Number(info.size ?? t.amountUsd ?? 0);
-    const sizeSol   = (t.sizeSol!=null) ? Number(t.sizeSol) : 0;
-    const price     = (t.priceUsd!=null) ? Number(t.priceUsd) : null;
-    const route     = String(info.route || t.route || "Raydium");
-    const slippage  = Number(info.slippage_bps ?? t.slippage_bps ?? 50);
-    const feesUsd   = (info.fees_usd ?? t.fees_usd ?? "0.01");
+    const sizeUsd  = Number(info.size ?? t.amountUsd ?? 0);
+    const sizeSol  = (t.sizeSol!=null) ? Number(t.sizeSol) : 0;
+    const entryUsd = (t.priceUsd!=null) ? Number(t.priceUsd) : 200.0000;  // placeholder OK
+    const route    = t.route || "Raydium";
+    const slipBps  = (t.slippageBps!=null) ? Number(t.slippageBps) : 50;
+    const feesUsd  = (t.feesUsd!=null) ? Number(t.feesUsd) : 0.01;
 
-    let mint        = String(info.baseMint || info.mint || t.mint || info.tokenMint || "").trim();
-    let poolAddress = String(info.poolAddress || t.poolAddress || "").trim();
+    // Opcionales
+    const showScores = process.env.SHOW_SCORES === '1';
+    const showTPSL   = process.env.SHOW_TPSL   === '1';
 
-    // Resolver mint/pool desde el feed si faltan
-    try {
-      const mp = await import("../../src/services/marketsPref.js");
-      if ((!mint || !poolAddress) && mp?.getSolanaPairs) {
-        const pairs = await mp.getSolanaPairs({ limit: 120 });
-        let cand = pairs.find(p => String(p.baseSymbol||"").toUpperCase().trim() === sym);
-        if (!cand) cand = pairs.find(p => String(p.baseSymbol||"").toUpperCase().includes(sym));
-        if (cand) {
-          mint        = mint || (cand.baseMint || cand.base_token_address || cand.baseMintAddress || "");
-          poolAddress = poolAddress ||
-                        cand.poolAddress ||
-                        cand.pairAddress ||
-                        (String(cand.id||"").includes("_") ? String(cand.id).split("_")[1] : "");
-        }
-      }
-    } catch(_) {}
+    const buyScore  = (t.buyScorePct!=null)  ? (Number(t.buyScorePct).toFixed(0)+"%") : null;
+    const scamScore = (t.scamScorePct!=null) ? (Number(t.scamScorePct).toFixed(0)+"%") : null;
+    const T1        = (t.T1!=null) ? String(t.T1) : null;
+    const scamT1    = (t.scam_t1!=null) ? String(t.scam_t1) : null;
 
-    if (!mint) mint = "So11111111111111111111111111111111111111112"; // fallback
-    const mintShort = mint.slice(0,6) + "…";
-
-    // Links reales (si hay pool usa pool, sino mint)
-    const dsUrl   = poolAddress
-      ? `https://dexscreener.com/solana/${poolAddress}`
-      : `https://dexscreener.com/solana/${mint}`;
-    const jupUrl  = `https://jup.ag/swap/${mint}-${USDC_MINT}`;
-    const rayUrl  = `https://raydium.io/swap/?inputMint=${mint}&outputMint=${USDC_MINT}`;
-    const beUrl   = `https://birdeye.so/token/${mint}?chain=solana`;
-    const ssUrl   = `https://solscan.io/token/${mint}`;
+    const tpPct       = (t.tpPct!=null) ? Number(t.tpPct) : null;
+    const slPct       = (t.slPct!=null) ? Number(t.slPct) : null;
+    const cooldownSec = (t.cooldownSec!=null) ? Number(t.cooldownSec) : null;
 
     const ts = new Date().toLocaleString();
 
-    // === Formato EXACTO (HTML) ===
-    const html = [
+    const lines = [
       "✅ <b>COMPRA AUTOMÁTICA EJECUTADA</b>",
-      "🧾 <b>Trade ID:</b> #" + tradeId,
-      "🪙 <b>Token:</b> $" + sym + " (" + mintShort + ")",
-      "🔗 <b>Ruta:</b> " + route,
-      " • <b>Slippage:</b> " + slippage + " bps",
-      " • <b>Fees/Gas:</b> ~" + String(feesUsd),
-      "💵 <b>Invertido:</b> " + (sizeUsd ? sizeUsd.toFixed(2) : "0.00") + " USD (" + sizeSol.toFixed(6) + " SOL) ",
-      "🎯 <b>Entrada:</b> " + (price!=null ? price.toFixed(4) : "—") + " USD",
+      "🧾 <b>Trade ID:</b> #"+tradeId,
+      "🪙 <b>Token:</b> $"+sym+" ("+mintShort+")",
+      "🔗 <b>Ruta:</b> "+route+" • <b>Slippage:</b> "+slipBps+" bps • <b>Fees/Gas:</b> ~"+feesUsd,
+      "💵 <b>Invertido:</b> "+sizeUsd.toFixed(2)+" USD ("+sizeSol.toFixed(6)+" SOL) 🎯 <b>Entrada:</b> "+entryUsd.toFixed(4)+" USD",
       "🛡️<b>Guardas:</b>",
       "- Honeypot ✅",
-      "• Liquidez bloqueada 🔒",
-      "• Propiedad renunciada 🗝️",
-      "• Datos desactualizados ✅",
-      "⏱️ <b>Hora:</b> " + ts,
-      "<b>Enlaces rápidos</b> " +
-        `<a href="${dsUrl}">DexScreener</a> | ` +
-        `<a href="${jupUrl}">Jupiter</a> | ` +
-        `<a href="${rayUrl}">Raydium</a> | ` +
-        `<a href="${beUrl}">Birdeye</a> | ` +
-        `<a href="${ssUrl}">Solscan</a>`
-    ].join("\n");
+      "• LiqLocked 🔒",
+      "• Renounced 🗝️",
+      "• Stale ✅",
+      "⏱️ <b>Hora:</b> "+ts,
+      // Enlaces (sin frase extra)
+      "<b>Enlaces rápidos</b> <a href=\"https://dexscreener.com/solana\">DexScreener</a> | <a href=\"https://jup.ag/swap/SOL-USDC\">Jupiter</a> | <a href=\"https://raydium.io/swap/?from=SOL&to=USDC\">Raydium</a> | <a href=\"https://birdeye.so/token/SOL?chain=solana\">Birdeye</a> | <a href=\"https://solscan.io/token/"+mint+"\">Solscan</a>"
+    ];
 
-    // Botones inline (Pnl + parciales)
-    const keyboard = {
+    // Agregar buy/scam score SOLO si hay datos y está habilitado
+    if (showScores && (buyScore || scamScore)) {
+      const bs = buyScore ? buyScore : "—";
+      const sc = scamScore ? scamScore : "—";
+      const t1 = T1 ? T1 : "—";
+      const st = scamT1 ? scamT1 : "—";
+      lines.splice(5, 0, "📊 <b>buy_score:</b> "+bs+" (T1 "+t1+") • <b>scam_score:</b> "+sc+" (scam_t1 "+st+")");
+    }
+
+    // Agregar TP/SL/Cooldown SOLO si hay datos y está habilitado
+    if (showTPSL && (tpPct!=null || slPct!=null || cooldownSec!=null)) {
+      const tp = (tpPct!=null) ? (tpPct.toFixed(0)+"%") : "—";
+      const sl = (slPct!=null) ? (slPct.toFixed(0)+"%") : "—";
+      const cd = (cooldownSec!=null) ? (cooldownSec+" s") : "—";
+      lines.splice(lines.indexOf("⏱️ <b>Hora:</b> "+ts), 0, "📈 <b>TP/SL:</b> TP "+tp+" • SL "+sl+" • <b>Cooldown:</b> "+cd);
+    }
+
+    const html = lines.join("\n");
+
+    const kb = {
       inline_keyboard: [
+        [{ text: "📊 PnL", callback_data: "HX_PNL:"+tradeId }],
         [
-          { text: "📊 PnL",       callback_data: `pnl:${tradeId}` },
-          { text: "🔁 25%",       callback_data: `sell:${tradeId}:25` },
-          { text: "🔁 50%",       callback_data: `sell:${tradeId}:50` },
-          { text: "🔁 75%",       callback_data: `sell:${tradeId}:75` },
-          { text: "💯 Vender",    callback_data: `sell:${tradeId}:100` }
+          { text: "🔁 25%", callback_data: "HX_SELL:"+tradeId+":25" },
+          { text: "🔁 50%", callback_data: "HX_SELL:"+tradeId+":50" },
+          { text: "🔁 75%", callback_data: "HX_SELL:"+tradeId+":75" },
+          { text: "💯 100%", callback_data: "HX_SELL:"+tradeId+":100" }
         ]
       ]
     };
 
-    await bot.sendMessage(chatId, html, {
-      parse_mode: "HTML",
-      disable_web_page_preview: true,
-      reply_markup: keyboard
-    });
-  } catch(_e) {}
+    bot.sendMessage(chatId, html, { parse_mode: "HTML", disable_web_page_preview: true, reply_markup: kb }).catch(()=>{});
+  } catch(_) {}
 }
-
 
 

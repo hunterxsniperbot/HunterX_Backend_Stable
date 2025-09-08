@@ -1,0 +1,60 @@
+import * as markets from '../services/marketsPref.js';
+
+const ENV = {
+  AUTOBUY:   process.env.M4_AUTOBUY_DEMO === '1',
+  SIZE:      Number(process.env.M4_AUTOBUY_USD || 20),
+  MIN_LIQ:   Number(process.env.M4_MIN_LIQ_USD || 20000),
+  MAX_FDV:   Number(process.env.M4_MAX_FDV_USD || 300000),
+  COOLDOWN:  Number(process.env.M4_COOLDOWN_S   || 90),
+};
+
+function nowSec(){ return Math.floor(Date.now()/1000); }
+
+export async function pickCandidate() {
+  // Trae varios y aplica filtros rápidos
+  const pairs = await markets.getSolanaPairs({ limit: 60 }).catch(()=>[]);
+  const good = (pairs || []).filter(p => {
+    const liq = Number(p.liquidityUsd || 0);
+    const fdv = Number(p.fdvUsd || 0);
+    return liq >= ENV.MIN_LIQ && (fdv === 0 || fdv <= ENV.MAX_FDV);
+  });
+  // Orden por mayor liquidez
+  good.sort((a,b) => (Number(b.liquidityUsd||0) - Number(a.liquidityUsd||0)));
+  return good[0] || null;
+}
+
+export async function maybeAutoBuyDemo(bot, uid, { demoBuyOnce }) {
+  if (!ENV.AUTOBUY) return { ok:false, reason:'autobuy_off' };
+
+  // cooldown por usuario
+  bot._m4Cooldown = bot._m4Cooldown || {};
+  const last = bot._m4Cooldown[uid] || 0;
+  if (nowSec() - last < ENV.COOLDOWN) {
+    return { ok:false, reason:'cooldown', remain: ENV.COOLDOWN - (nowSec()-last) };
+  }
+
+  const cand = await pickCandidate();
+  if (!cand) return { ok:false, reason:'no_candidate' };
+
+  const sym = cand.baseSymbol || '???';
+  const liq = Number(cand.liquidityUsd || 0);
+  const fdv = Number(cand.fdvUsd || 0);
+
+  // Umbral final (refuerzo)
+  if (liq < ENV.MIN_LIQ || (fdv>0 && fdv > ENV.MAX_FDV)) {
+    return { ok:false, reason:'threshold_reject' };
+  }
+
+  if (typeof demoBuyOnce !== 'function') {
+    return { ok:false, reason:'no_demo_buy_func' };
+  }
+
+  try {
+    // Si tu runOnce ignora el símbolo, no pasa nada por pasarle 2º arg.
+    const r = await demoBuyOnce(ENV.SIZE, sym);
+    bot._m4Cooldown[uid] = nowSec();
+    return { ok:true, trade:r, symbol:sym, size:ENV.SIZE, liq, fdv };
+  } catch (e) {
+    return { ok:false, reason:'demo_buy_fail', error:String(e?.message||e) };
+  }
+}

@@ -58,8 +58,6 @@ import * as profileStore  from '../services/profile.js';      // perfiles (si ap
 import * as supabase      from '../services/supabase.js';     // si querés hooks externos
 
 import * as state        from '../services/state.js';     // persistencia simple ON/OFF
-import { maybeAutoBuyDemo } from "../ai/m4Selector.js";
-import { runOnce as demoBuyOnce } from "./demoBuyOnce.js";
 
 const allow = fs.existsSync("flags/ALLOW_AUTOSNIPER");
 
@@ -565,19 +563,7 @@ async function manageExits({ bot, uid, mode, store, p, cur, phantomClient }) {
 // LOOP de escaneo y ejecución por usuario
 // ———————————————————————————————————————————————————————————
 async function loopForUser(bot, uid, { phantomClient }) {
-    (bot._lastTick ||= {});
-  bot._lastTick[uid] = Date.now();
-try {
-  const res = await maybeAutoBuyDemo(bot, uid, { demoBuyOnce });
-  if (res && res.ok) { await announceAutoBuy(bot, uid, res); }
-if (res && res.ok) {
-    console.log(`[M4] DEMO buy ${res.symbol} $${res.size} liq=$${res.liq} fdv=$${res.fdv}`);
-    if (typeof announceAutoBuy === "function") announceAutoBuy(bot, uid, res);
-  }
-} catch (e) {
-  console.log("[M4] selector error", e?.message||e);
-}
-// --- Kill-switch y DEMO_ONLY flags ---
+  // --- Kill-switch y DEMO_ONLY flags ---
   try {
     allow = fs.existsSync("flags/ALLOW_AUTOSNIPER");
     if (!allow) return;
@@ -740,12 +726,10 @@ export default function registerAutoSniper(bot, { phantomClient } = {}) {
   bot.removeTextListener?.(/^\s*\/autosniper(?:@[\w_]+)?(?:\s+(?:on|off|stop|status))?\s*$/i);
   bot.removeTextListener?.(/^\/autosniper/i);
 
-  bot.onText(/^\s*\/autosniper(?:@[\w_]+)?(?:\s+(on|off|stop|status|tick))?\s*$/i, async (msg, m) => {
+  bot.onText(/^\s*\/autosniper(?:@[\w_]+)?(?:\s+(on|off|stop|status))?\s*$/i, async (msg, m) => {
     const chatId = msg.chat.id;
     const uid    = String(msg.from.id);
-    
-    bot._notifyChatByUid = bot._notifyChatByUid || {}; bot._notifyChatByUid[uid] = chatId;
-const arg    = ((m && m[1]) ? String(m[1]) : '').toLowerCase().trim();
+    const arg    = ((m && m[1]) ? String(m[1]) : '').toLowerCase().trim();
         
 console.log(`[AUTOSNIPER] cmd arg="${arg||'(vacío)'}" uid=${uid}`);
 
@@ -770,42 +754,20 @@ console.log(`[AUTOSNIPER] cmd arg="${arg||'(vacío)'}" uid=${uid}`);
       const prof = (await profileStore.getProfile?.(uid))?.sniperProfile || ENV.PROFILE;
       const pri  = isPriorityNowUTC3() ? 'Sí' : 'No';
 
-      const ladderPretty = (() => {
-  try {
-    const steps = JSON.parse(ENV.STOP_LADDER_JSON);
-    if (!Array.isArray(steps) || steps.length === 0) return '—';
-    return steps.map((s,i)=>`${i+1}) +${s.triggerUpPct}% → −${s.backToPct}% ⇒ vender ${s.sellPct}%`).join('\n');
-  } catch { return '—'; }
-})();
-const lines = [
+      const lines = [
         '<b>📟 Sniper:</b> ' + (on ? '<b>ON</b>' : '<b>OFF</b>'),
         '• Modo: <b>' + escHtml(mode) + '</b>',
         '• Perfil: <b>' + escHtml(prof) + '</b>',
         '• Prioridad horaria ahora: <b>' + escHtml(pri) + '</b> (9–12 / 13–16 / 17–20 UTC−3)',
         '• Base DEMO/REAL: $' + ENV.BASE_DEMO + ' / $' + ENV.BASE_REAL,
-        '• Ladder:\n<pre>' + escHtml(ladderPretty) + '</pre>',
-        '• Último tick: <b>' + escHtml(bot._lastTick?.[uid] ? Math.round((Date.now()-bot._lastTick[uid])/1000)+'s' : '—') + '</b>'
+        '• Ladder: <code>' + escHtml(ENV.STOP_LADDER_JSON) + '</code>'
       ];
 
       const text = lines.join('\n');
       return bot.sendMessage(chatId, text, { parse_mode:'HTML', disable_web_page_preview:true });
     }
     
-
-    if (arg === 'tick') {
-      const uid = String(msg.from.id);
-      try {
-      if (bot._running?.[uid]) {
-        return bot.sendMessage(chatId, '<b>⏳ Loop en curso, esperá…</b>', { parse_mode:'HTML' });
-      }
-      await loopForUser(bot, uid, { phantomClient: bot._phantomClient });
-        return bot.sendMessage(chatId, '<b>⏱️ Tick ejecutado</b> (manual)', { parse_mode:'HTML' });
-      } catch(e) {
-        return bot.sendMessage(chatId, '<b>❌ Tick falló:</b> ' + escHtml(String(e?.message||e)), { parse_mode:'HTML' });
-      }
-    }
-    if (arg === 'on' || arg === '') {
-
+if (arg === 'on' || arg === '') {
       if (bot._sniperOn[uid]) {
       // auto-heal: si está ON pero no hay loop, arrancarlo
       if (!bot._sniperLoops?.[uid]) {
@@ -858,7 +820,7 @@ const lines = [
     }
 
     // Help
-    bot.sendMessage(chatId, 'Uso: <code>/autosniper</code> (=on) | <code>/autosniper off</code> | <code>/autosniper status</code> | <code>/autosniper tick</code> | <code>/autosniper tick</code>', { parse_mode:'HTML' });
+    bot.sendMessage(chatId, 'Uso: <code>/autosniper</code> (=on) | <code>/autosniper off</code> | <code>/autosniper status</code>', { parse_mode:'HTML' });
   });
 
   // Compatibilidad: /stop para apagar rápido
@@ -889,118 +851,3 @@ const lines = [
    Cambios HX-A12 documentados: RiskEngine [momentum+edad], pre-sim Jupiter, ladder exacta,
    budgets/cooldown, anti-reentrancia, abortables y stores por usuario/modo.
 ===================================================================== */
-
-// --- [HX] DEMO autobuy notifier (HTML)
-
-
-
-// === HX Insert ===
-
-
-
-// === HX Insert ===
-// === HunterX — announceAutoBuy (COMPRA) ===
-// Formato EXACTO pedido (HTML), con botones PnL y 25/50/75/100.
-// === HunterX — announceAutoBuy (COMPRA) ===
-// Formato exacto pedido (HTML). "TP/SL/Cooldown" y "buy/scam score" son condicionales.
-// --- [HX] DEMO autobuy notifier (HTML) — formato exacto + links reales + botones
-const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
-
-export async function announceAutoBuy(bot, uid, info) {
-  try {
-    const chatId =
-      (bot._notifyChatByUid && bot._notifyChatByUid[uid])
-        ? bot._notifyChatByUid[uid]
-        : Number(uid);
-
-    const t         = info.trade || {};
-    const tradeId   = t.id ? String(t.id) : ("demo-" + Date.now());
-    const sym       = String(info.symbol || t.token || "-").toUpperCase().trim();
-    const sizeUsd   = Number(info.size ?? t.amountUsd ?? 0);
-    const sizeSol   = (t.sizeSol!=null) ? Number(t.sizeSol) : 0;
-    const price     = (t.priceUsd!=null) ? Number(t.priceUsd) : null;
-    const route     = String(info.route || t.route || "Raydium");
-    const slippage  = Number(info.slippage_bps ?? t.slippage_bps ?? 50);
-    const feesUsd   = (info.fees_usd ?? t.fees_usd ?? "0.01");
-
-    let mint        = String(info.baseMint || info.mint || t.mint || info.tokenMint || "").trim();
-    let poolAddress = String(info.poolAddress || t.poolAddress || "").trim();
-
-    // Resolver mint/pool desde el feed si faltan
-    try {
-      const mp = await import("../../src/services/marketsPref.js");
-      if ((!mint || !poolAddress) && mp?.getSolanaPairs) {
-        const pairs = await mp.getSolanaPairs({ limit: 120 });
-        let cand = pairs.find(p => String(p.baseSymbol||"").toUpperCase().trim() === sym);
-        if (!cand) cand = pairs.find(p => String(p.baseSymbol||"").toUpperCase().includes(sym));
-        if (cand) {
-          mint        = mint || (cand.baseMint || cand.base_token_address || cand.baseMintAddress || "");
-          poolAddress = poolAddress ||
-                        cand.poolAddress ||
-                        cand.pairAddress ||
-                        (String(cand.id||"").includes("_") ? String(cand.id).split("_")[1] : "");
-        }
-      }
-    } catch(_) {}
-
-    if (!mint) mint = "So11111111111111111111111111111111111111112"; // fallback
-    const mintShort = mint.slice(0,6) + "…";
-
-    // Links reales (si hay pool usa pool, sino mint)
-    const dsUrl   = poolAddress
-      ? `https://dexscreener.com/solana/${poolAddress}`
-      : `https://dexscreener.com/solana/${mint}`;
-    const jupUrl  = `https://jup.ag/swap/${mint}-${USDC_MINT}`;
-    const rayUrl  = `https://raydium.io/swap/?inputMint=${mint}&outputMint=${USDC_MINT}`;
-    const beUrl   = `https://birdeye.so/token/${mint}?chain=solana`;
-    const ssUrl   = `https://solscan.io/token/${mint}`;
-
-    const ts = new Date().toLocaleString();
-
-    // === Formato EXACTO (HTML) ===
-    const html = [
-      "✅ <b>COMPRA AUTOMÁTICA EJECUTADA</b>",
-      "🧾 <b>Trade ID:</b> #" + tradeId,
-      "🪙 <b>Token:</b> $" + sym + " (" + mintShort + ")",
-      "🔗 <b>Ruta:</b> " + route,
-      " • <b>Slippage:</b> " + slippage + " bps",
-      " • <b>Fees/Gas:</b> ~" + String(feesUsd),
-      "💵 <b>Invertido:</b> " + (sizeUsd ? sizeUsd.toFixed(2) : "0.00") + " USD (" + sizeSol.toFixed(6) + " SOL) ",
-      "🎯 <b>Entrada:</b> " + (price!=null ? price.toFixed(4) : "—") + " USD",
-      "🛡️<b>Guardas:</b>",
-      "- Honeypot ✅",
-      "• Liquidez bloqueada 🔒",
-      "• Propiedad renunciada 🗝️",
-      "• Datos desactualizados ✅",
-      "⏱️ <b>Hora:</b> " + ts,
-      "<b>Enlaces rápidos</b> " +
-        `<a href="${dsUrl}">DexScreener</a> | ` +
-        `<a href="${jupUrl}">Jupiter</a> | ` +
-        `<a href="${rayUrl}">Raydium</a> | ` +
-        `<a href="${beUrl}">Birdeye</a> | ` +
-        `<a href="${ssUrl}">Solscan</a>`
-    ].join("\n");
-
-    // Botones inline (Pnl + parciales)
-    const keyboard = {
-      inline_keyboard: [
-        [
-          { text: "📊 PnL",       callback_data: `pnl:${tradeId}` },
-          { text: "🔁 25%",       callback_data: `sell:${tradeId}:25` },
-          { text: "🔁 50%",       callback_data: `sell:${tradeId}:50` },
-          { text: "🔁 75%",       callback_data: `sell:${tradeId}:75` },
-          { text: "💯 Vender",    callback_data: `sell:${tradeId}:100` }
-        ]
-      ]
-    };
-
-    await bot.sendMessage(chatId, html, {
-      parse_mode: "HTML",
-      disable_web_page_preview: true,
-      reply_markup: keyboard
-    });
-  } catch(_e) {}
-}
-
-
-
