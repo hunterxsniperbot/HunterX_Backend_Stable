@@ -66,7 +66,7 @@ export async function maybeAutoBuyDemo(bot, uid, { demoBuyOnce }) {
     bot._m4Cooldown[uid]   = now;
     bot._m4Bought[uid][key] = now;
 
-    return { ok:true, pair: cand?.pair, mint: cand?.mint, tradeId: (r?.id || `demo-${Date.now()}`), trade, symbol:sym, size:SIZE, liq, fdv };
+    return { ok:true, trade, symbol:sym, size:SIZE, liq, fdv };
   } catch (e) {
     return { ok:false, reason:'demo_buy_fail', error:String(e?.message||e) };
   }

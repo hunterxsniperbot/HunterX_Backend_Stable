@@ -1,0 +1,176 @@
+export default function registerInlinePnlSell(bot){
+  console.log("✅ inlinePnlSell listo (pnl/sell callbacks)");
+  // ---- helpers de estado + lock
+  bot._hx = bot._hx || {};
+  bot._hx.pos  = bot._hx.pos  || {};   // { "uid:tradeId": { sizeUsd, entry, qty, realizedUsd, soldPct, remPct, mint, pair, sym } }
+  bot._hx.lock = bot._hx.lock || {};   // { "uid:tradeId": msUntil }
+
+  const keyOf = (u,t) => `${String(u)}:${String(t)}`;
+  const locked = (k) => (bot._hx.lock[k]||0) > Date.now();
+  const lock   = (k,ms=2500)=> bot._hx.lock[k] = Date.now()+ms;
+
+  function pctFmt(x){ return `${(+x).toFixed(0)}%`; }
+  function money(x){ return `$${(+x).toFixed(2)}`; }
+  function pcent(x){ return `${(+x).toFixed(2)}%`; }
+
+  function renderTradeKeyboard(uid, tradeId, remPct=100) {
+    const u = String(uid), t = String(tradeId);
+    // Oculta botones que exceden remanente
+    const btn = (p) => ({ text: `${p}%`, callback_data: `hxv1|sell|${u}|${t}|${p}` });
+    const rowSell = [];
+    if (remPct >= 25) rowSell.push(btn(25));
+    if (remPct >= 50) rowSell.push(btn(50));
+    if (remPct >= 75) rowSell.push(btn(75));
+    rowSell.push({ text:"💯", callback_data:`hxv1|sell|${u}|${t}|100` }); // 100 = vender TODO lo que quede
+    return {
+      inline_keyboard: [
+        [ { text:"📊 PnL", callback_data:`hxv1|pnl|${u}|${t}` } ],
+        rowSell
+      ]
+    };
+  }
+
+  async function fetchPriceUSD(pair, mint){
+    // 1) DexScreener por pair
+    try {
+      if (pair) {
+        const r = await fetch(`https://api.dexscreener.com/latest/dex/pairs/solana/${pair}`);
+        if (r.ok) {
+          const j = await r.json();
+          const p = Number(j?.pairs?.[0]?.priceUsd);
+          if (p > 0) return p;
+        }
+      }
+    } catch {}
+    // 2) fallback (sin red) -> usa entry
+    return null;
+  }
+
+  function buildLinks(p){
+    const linkDex  = p.pair ? `https://dexscreener.com/solana/${p.pair}` : 'https://dexscreener.com/solana';
+    const linkJup  = 'https://jup.ag/swap/SOL-USDC';
+    const linkRay  = 'https://raydium.io/swap/?from=SOL&to=USDC';
+    const linkBird = p.mint ? `https://birdeye.so/token/${p.mint}?chain=solana` : 'https://birdeye.so/token/SOL?chain=solana';
+    const linkScan = p.mint ? `https://solscan.io/token/${p.mint}` : 'https://solscan.io/token/So11111111111111111111111111111111111111112';
+    return { linkDex, linkJup, linkRay, linkBird, linkScan };
+  }
+
+  async function handlePnL({chatId, msgId, uid, tradeId}){
+    const k = keyOf(uid, tradeId);
+    const p = bot._hx.pos[k];
+    if (!p) {
+      try { await bot.answerCallbackQuery(undefined, { text:"❌ Sin estado de trade", show_alert:true }); } catch{}
+      return;
+    }
+    const priceNow = await fetchPriceUSD(p.pair, p.mint) || p.entry || 0;
+    const remV     = p.sizeUsd * (p.remPct/100);
+    const remQty   = (p.qty||0) * (p.remPct/100);
+    const remVal   = (p.entry&&priceNow) ? (remQty * priceNow) : remV;
+    const unreal   = remVal - remV;
+    const total    = p.realizedUsd + unreal;
+    const totalPct = p.sizeUsd>0 ? (total/p.sizeUsd*100) : 0;
+
+    const {linkDex,linkJup,linkRay,linkBird,linkScan} = buildLinks(p);
+    const note = [
+      `\n📊 <b>PnL</b> — Realizado: <b>${money(p.realizedUsd)}</b> · No realizado: <b>${money(unreal)}</b> · Total: <b>${money(total)} (${pcent(totalPct)})</b>`,
+      `Queda: <b>${pctFmt(p.remPct)}</b> (${money(remV)})`,
+      `<b>Enlaces rápidos</b> <a href="${linkDex}">DexScreener</a> | <a href="${linkJup}">Jupiter</a> | <a href="${linkRay}">Raydium</a> | <a href="${linkBird}">Birdeye</a> | <a href="${linkScan}">Solscan</a>`
+    ].join("\n");
+
+    await bot.editMessageText(
+      (p._lastHtml || `🧾 <b>Trade ID:</b> #${tradeId}\n🪙 <b>Token:</b> $${p.sym}`) + "\n" + note,
+      {
+        chat_id: chatId,
+        message_id: msgId,
+        parse_mode: "HTML",
+        disable_web_page_preview: true,
+        reply_markup: renderTradeKeyboard(uid, tradeId, p.remPct)
+      }
+    );
+  }
+
+  async function handleSell({chatId, msgId, uid, tradeId, pctReq}){
+    const k = keyOf(uid, tradeId);
+    if (locked(k)) { try{ await bot.answerCallbackQuery(undefined, { text:"⏳ En curso…", show_alert:false }); }catch{}; return; }
+    lock(k);
+
+    const p = bot._hx.pos[k];
+    if (!p) { try{ await bot.answerCallbackQuery(undefined,{text:"❌ Trade no encontrado", show_alert:true}); }catch{}; return; }
+
+    // Normalizar porcentaje: 100 = vender TODO lo que quede
+    let sellPct = Number(pctReq)||0;
+    if (sellPct === 100) sellPct = p.remPct;
+
+    // Tope: no permitir superar el 100% total
+    if (sellPct <= 0 || sellPct > p.remPct + 1e-6) {
+      try{ await bot.answerCallbackQuery(undefined,{text:`❌ No queda tanto para vender (resta ${pctFmt(p.remPct)})`, show_alert:true}); }catch{}
+      return;
+    }
+
+    // Precio de salida (demo): intenta DexScreener; si no, usa entry
+    const priceNow = await fetchPriceUSD(p.pair, p.mint) || p.entry || 0;
+
+    // Base: coste y qty proporcional
+    const soldCostUsd = p.sizeUsd * (sellPct/100);
+    const soldQty     = (p.qty||0) * (sellPct/100);
+    const soldProUsd  = (priceNow && soldQty) ? (soldQty * priceNow) : soldCostUsd;
+    const realized    = soldProUsd - soldCostUsd;
+
+    p.realizedUsd += realized;
+    p.soldPct     += sellPct;
+    p.remPct       = Math.max(0, 100 - p.soldPct);
+
+    const when = new Date().toLocaleString();
+    const line = `\n✂️ <b>VENTA PARCIAL EJECUTADA</b>\n<b>Trade ID:</b> #${tradeId} • <b>Vendido:</b> ${pctFmt(sellPct)} • <b>Hora:</b> ${when}`;
+
+    // Render actualizado (mantener botones acorde al remanente)
+    const {linkDex,linkJup,linkRay,linkBird,linkScan} = buildLinks(p);
+    const pnlLine = `📊 <b>Realizado:</b> <b>${money(p.realizedUsd)}</b> • <b>Queda:</b> <b>${pctFmt(p.remPct)}</b>`;
+
+    const html = [
+      (p._lastHtml || `🧾 <b>Trade ID:</b> #${tradeId}\n🪙 <b>Token:</b> $${p.sym}`),
+      line,
+      pnlLine,
+      `<b>Enlaces rápidos</b> <a href="${linkDex}">DexScreener</a> | <a href="${linkJup}">Jupiter</a> | <a href="${linkRay}">Raydium</a> | <a href="${linkBird}">Birdeye</a> | <a href="${linkScan}">Solscan</a>`
+    ].join("\n");
+
+    await bot.editMessageText(html, {
+      chat_id: chatId,
+      message_id: msgId,
+      parse_mode: "HTML",
+      disable_web_page_preview: true,
+      reply_markup: p.remPct>0 ? renderTradeKeyboard(uid, tradeId, p.remPct) : { inline_keyboard: [[{text:"📜 Registro", callback_data:`hxv1|noop|${uid}|${tradeId}`}]] }
+    });
+
+    try{ await bot.answerCallbackQuery(undefined,{text:"✅ Venta ejecutada", show_alert:false}); }catch{}
+  }
+
+  // Captura de callback
+  bot.on("callback_query", async (q) => {
+    try {
+      const data = String(q.data||"");
+      if (!data.startsWith("hxv1|")) return;
+      const parts = data.split("|"); // hxv1|type|uid|tradeId|extra?
+      const type   = parts[1];
+      const uid    = parts[2];
+      const tradeId= parts[3];
+      const extra  = parts[4];
+
+      const chatId = q.message?.chat?.id;
+      const msgId  = q.message?.message_id;
+
+      if (!chatId || !msgId) return;
+
+      if (type === "pnl") {
+        await handlePnL({chatId, msgId, uid, tradeId});
+      } else if (type === "sell") {
+        await handleSell({chatId, msgId, uid, tradeId, pctReq: extra});
+      } else {
+        try{ await bot.answerCallbackQuery(q.id, { text:"OK", show_alert:false }); }catch{}
+      }
+    } catch (e) {
+      console.error("[inlinePnlSell] error:", e?.message||e);
+      try { await bot.answerCallbackQuery(q.id, { text: "❌ Error", show_alert:true }); } catch(_) {}
+    }
+  });
+}

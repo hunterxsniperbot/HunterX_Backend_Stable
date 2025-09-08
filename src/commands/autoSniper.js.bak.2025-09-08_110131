@@ -910,7 +910,7 @@ const lines = [
 // Formato exacto pedido (HTML). "TP/SL/Cooldown" y "buy/scam score" son condicionales.
 // --- [HX] DEMO autobuy notifier (HTML) — formato exacto + links reales + botones
 const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
-export function announceAutoBuy(bot, uid, info) {
+function announceAutoBuy(bot, uid, info) {
   try {
     const chatId = (bot._notifyChatByUid && bot._notifyChatByUid[uid]) ? bot._notifyChatByUid[uid] : Number(uid);
 
@@ -933,24 +933,7 @@ export function announceAutoBuy(bot, uid, info) {
 
     const ts = new Date().toLocaleString();
 
-// Estado compartido para inline buttons (pnl/sell)
-bot._hx = bot._hx || { pos:{} };
-const _key = String(uid)+":"+String(tradeId);
-bot._hx.pos[_key] = {
-  uid: String(uid),
-  tradeId: String(tradeId),
-  sym: sym,
-  sizeUsd: Number(size||0),
-  entry: Number(price||0),
-  qty: Number(qty||((size&&price)?(size/price):0)) || 0,
-  realizedUsd: 0,
-  soldPct: 0,
-  remPct: 100,
-  mint: mint || null,
-  pair: pair || null
-};
-
-// Texto EXACTO que pediste (línea por línea)
+    // Texto EXACTO que pediste (línea por línea)
     const lines = [
       "✅ <b>COMPRA AUTOMÁTICA EJECUTADA</b>",
       "🧾 <b>Trade ID:</b> #" + tradeId,
@@ -981,14 +964,6 @@ bot._hx.pos[_key] = {
         { text: "💯",             callback_data: `hx:sell:${uid}:${tradeId}:100:demo` }
       ]]
     };
-
-    // guarda html base para futuras ediciones (pnl/sell)
-    try {
-      const k = String(uid)+":"+String(tradeId);
-      bot._hx = bot._hx || { pos:{} };
-      bot._hx.pos = bot._hx.pos || {};
-      const p = bot._hx.pos[k]; if (p) p._lastHtml = html;
-    } catch {}
 
     bot.sendMessage(chatId, html, {  parse_mode: "HTML", disable_web_page_preview: true, reply_markup: renderTradeKeyboard(uid, tradeId) })
       .then(m => {

@@ -1,17 +1,19 @@
 // import { wireCandidatos } from "./src/bot/wireCandidatos.js";
 import "./src/boot/ipv4.js";
+
 // index.js — Entry point HunterX (ESM, robusto)
+
 // 1) ENV + sane defaults
 import "dotenv/config";
 import { setDefaultResultOrder } from "node:dns";
 setDefaultResultOrder("ipv4first");
 
 // 2) Boot de infraestructura (no dependen de Telegram)
-import "./src/boot/errors.js";   // opcional: captura errores no fatales
-import "./src/boot/http.js";     // keep-alive / ajustes HTTP (si lo usás)
+import "./src/boot/errors.js";   // captura errores no fatales
+import "./src/boot/http.js";     // keep-alive / ajustes HTTP
 import "./src/boot/prewarm.js";  // pre-carga ligera (si lo usás)
-import "./src/boot/api.js";      // <- expone /api/salud, /api/wallet, /api/sell
-import { hookTyping } from "./src/boot/typing.js"; // indicador "typing..." (opcional)
+import "./src/boot/api.js";      // expone /api/salud, /api/wallet, /api/sell
+import { hookTyping } from "./src/boot/typing.js"; // indicador "typing..."
 
 // 3) Servicios para inyección
 import * as quickNodeClient from "./src/services/quicknode.js";
@@ -19,19 +21,21 @@ import * as phantomClient   from "./src/services/phantom.js";
 import * as trading         from "./src/services/trading.js";
 
 // 4) Handlers de comandos
-import registerAjustes     from "./src/commands/ajustes.js";
-import registerSniperReset from "./src/commands/sniperReset.js";
-import registerAutoSniper  from "./src/commands/autoSniper.js";
-import registerMensaje     from "./src/commands/mensaje.js";
-import attachWalletSell    from "./src/commands/wallet_sell.js";
-import registerRegistro    from "./src/commands/registro.js";
-import registerWallet      from "./src/commands/wallet.js";
-import registerStatus      from "./src/commands/status.js";
-import registerInitSheets  from "./src/commands/initSheets.js";
-import registerPick        from "./src/commands/pick.js";
-import registerMode        from "./src/commands/mode.js";
-import registerSalud       from "./src/commands/salud.js";     // /salud
-import registerDemoBuy     from "./src/commands/demo_buy.js";  // compra demo
+import registerAjustes      from "./src/commands/ajustes.js";
+import registerSniperReset  from "./src/commands/sniperReset.js";
+import registerAutoSniper   from "./src/commands/autoSniper.js";
+import registerDemoCmds     from "./src/commands/demo_cmds.js";
+import registerInlinePnlSell from "./src/bot/inlinePnlSell.js";
+
+import registerMensaje      from "./src/commands/mensaje.js";
+import attachWalletSell     from "./src/commands/wallet_sell.js";
+import registerRegistro     from "./src/commands/registro.js";
+import registerWallet       from "./src/commands/wallet.js";
+import registerStatus       from "./src/commands/status.js";
+import registerInitSheets   from "./src/commands/initSheets.js";
+import registerPick         from "./src/commands/pick.js";
+import registerMode         from "./src/commands/mode.js";
+import registerSalud        from "./src/commands/salud.js";     // /salud
 
 // 5) Telegram (opcional: si no hay token, seguimos sólo con la API)
 import TelegramBot from "node-telegram-bot-api";
@@ -64,33 +68,16 @@ if (!TOKEN) {
     console.log("🛰️ [TG] Modo: POLLING");
   }
 
-  // Menú slash
-  async function setSlashMenu() {
-    const commands = [
-  { command: "salud",     description: "Conexiones activas" },
-  { command: "autosniper",description: "Activar sniper automático" },
-  { command: "real",      description: "Modo (Trading real)" },
-  { command: "demo",      description: "Modo (simulación)" },
-  { command: "stop",      description: "Detener sniper" },
-  { command: "wallet",    description: "Ver posiciones abiertas" },
-  { command: "registro",  description: "Ver posiciones cerradas" },
-  { command: "ajustes",   description: "Configurar sniper" },
-  { command: "mensaje",   description: "Ayuda" }
-];
-    try {
-      // if (process.env.SET_COMMANDS_ON_BOOT==="1") if (process.env.SET_COMMANDS_ON_BOOT==="1") if (process.env.SET_COMMANDS_ON_BOOT==="1") await bot.setMyCommands(commands, { scope: { type: "default" } });
-      console.log("🟦 [Slash] comandos seteados");
-    } catch (e) {
-      console.error("❌ setMyCommands:", e?.message || e);
-    }
-  }
-
-  // Limpieza de teclados heredados
+  // Limpieza de teclados + map chat<->uid
   bot._kbCleanAt = bot._kbCleanAt || {};
+  bot._uidByChat = bot._uidByChat || {};
+  bot._chatByUid = bot._chatByUid || {};
   bot.on("message", async (msg) => {
     try {
       if (msg.via_bot || msg.reply_to_message) return;
       const chatId = msg.chat.id;
+      const uid = String(msg.from?.id || "");
+      if (uid) { bot._uidByChat[chatId] = uid; bot._chatByUid[uid] = chatId; }
       const last = bot._kbCleanAt[chatId] || 0;
       if (Date.now() - last < 60_000) return;
       await bot.sendMessage(chatId, " ", { reply_markup: { remove_keyboard: true } });
@@ -101,32 +88,36 @@ if (!TOKEN) {
   // Registro de handlers (una vez)
   if (!global.__HX_HANDLERS_REGISTERED__) {
     console.log("🔧 Iniciando bot…");
-    try { registerAjustes(bot, { quickNodeClient, phantomClient }); console.log("✅ ajustes.js"); }          catch(e){ console.error("❌ ajustes:", e?.message||e); }
-    try { registerSniperReset(bot);                                  console.log("✅ sniperReset.js"); }     catch(e){ console.error("❌ sniperReset:", e?.message||e); }
-    try { registerAutoSniper(bot, { quickNodeClient, phantomClient, trading }); console.log("✅ autoSniper.js"); } catch(e){ console.error("❌ autoSniper:", e?.message||e); }
-    try { registerWallet(bot, { quickNodeClient, phantomClient, trading });     console.log("✅ wallet.js"); }      catch(e){ console.error("❌ wallet:", e?.message||e); }
-    try { registerRegistro(bot, { trading });                         console.log("✅ registro.js"); }       catch(e){ console.error("❌ registro:", e?.message||e); }
-    try { registerMensaje(bot);                                       console.log("✅ mensaje.js"); }        catch(e){ console.error("❌ mensaje:", e?.message||e); }
-    try { attachWalletSell(bot);                                      console.log("✅ wallet_sell.js"); }    catch(e){ console.error("❌ wallet_sell:", e?.message||e); }
-    try { registerStatus(bot);                                        console.log("✅ status.js"); }         catch(e){ console.error("❌ status:", e?.message||e); }
-    try { registerInitSheets(bot);                                    console.log("✅ initSheets.js"); }     catch(e){ console.error("❌ initSheets:", e?.message||e); }
-    try { registerPick(bot);                                          console.log("✅ pick.js"); }           catch(e){ console.error("❌ pick:", e?.message||e); }
-    try { registerMode(bot);                                          console.log("✅ mode.js"); }           catch(e){ console.error("❌ mode:", e?.message||e); }
 
-    // extras
-    try { registerSalud(bot);                                        console.log("✅ salud.js"); }           catch(e){ console.error("❌ salud:", e?.message||e); }
-    try { registerDemoBuy(bot);                                      console.log("✅ demo_buy.js"); }        catch(e){ console.error("❌ demo_buy:", e?.message||e); }
+    try { registerAjustes(bot, { quickNodeClient, phantomClient }); console.log("✅ ajustes.js"); }           catch(e){ console.error("❌ ajustes:", e?.message||e); }
+    try { registerSniperReset(bot);                                  console.log("✅ sniperReset.js"); }      catch(e){ console.error("❌ sniperReset:", e?.message||e); }
+    try { registerAutoSniper(bot, { quickNodeClient, phantomClient, trading }); console.log("✅ autoSniper.js"); } catch(e){ console.error("❌ autoSniper:", e?.message||e); }
+
+    try { registerInlinePnlSell(bot); console.log("✅ inlinePnlSell listo (pnl/sell callbacks)"); }
+    catch(e){ console.error("❌ inlinePnlSell:", e?.message||e); }
+
+    try { registerDemoCmds(bot); console.log("✅ demo_cmds.js"); }
+    catch(e){ console.error("❌ demo_cmds:", e?.message||e); }
+
+    try { registerWallet(bot, { quickNodeClient, phantomClient, trading }); console.log("✅ wallet.js"); }     catch(e){ console.error("❌ wallet:", e?.message||e); }
+    try { registerRegistro(bot, { trading });                         console.log("✅ registro.js"); }        catch(e){ console.error("❌ registro:", e?.message||e); }
+    try { registerMensaje(bot);                                       console.log("✅ mensaje.js"); }         catch(e){ console.error("❌ mensaje:", e?.message||e); }
+    try { attachWalletSell(bot);                                      console.log("✅ wallet_sell.js"); }     catch(e){ console.error("❌ wallet_sell:", e?.message||e); }
+    try { registerStatus(bot);                                        console.log("✅ status.js"); }          catch(e){ console.error("❌ status:", e?.message||e); }
+    try { registerInitSheets(bot);                                    console.log("✅ initSheets.js"); }      catch(e){ console.error("❌ initSheets:", e?.message||e); }
+    try { registerPick(bot);                                          console.log("✅ pick.js"); }            catch(e){ console.error("❌ pick:", e?.message||e); }
+    try { registerMode(bot);                                          console.log("✅ mode.js"); }            catch(e){ console.error("❌ mode:", e?.message||e); }
+    try { registerSalud(bot);                                         console.log("✅ salud.js"); }           catch(e){ console.error("❌ salud:", e?.message||e); }
 
     // NUEVO: comandos inline
-    try { 
-      const { default: registerComandosInline } = await import("./src/commands/comandos_inline.js"); 
-      registerComandosInline(bot); 
-      console.log("✅ comandos_inline.js"); 
-    } catch(e){ 
-      console.error("❌ comandos_inline:", e?.message||e); 
+    try {
+      const { default: registerComandosInline } = await import("./src/commands/comandos_inline.js");
+      registerComandosInline(bot);
+      console.log("✅ comandos_inline.js");
+    } catch(e){
+      console.error("❌ comandos_inline:", e?.message||e);
     }
 
-    // (menu) deshabilitado: usar BotFather
     global.__HX_HANDLERS_REGISTERED__ = true;
     console.log("🤖 HunterX Bot arrancado y escuchando comandos");
   } else {
@@ -144,6 +135,4 @@ if (!TOKEN) {
 }
 
 // Fin: si sólo querés API (sin token), ya quedó arriba con /api/salud
-
-// === wire /candidatos ===
-try { wireCandidatos(bot); } catch {}
+// try { wireCandidatos(bot); } catch {}

@@ -910,7 +910,7 @@ const lines = [
 // Formato exacto pedido (HTML). "TP/SL/Cooldown" y "buy/scam score" son condicionales.
 // --- [HX] DEMO autobuy notifier (HTML) — formato exacto + links reales + botones
 const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
-export function announceAutoBuy(bot, uid, info) {
+function announceAutoBuy(bot, uid, info) {
   try {
     const chatId = (bot._notifyChatByUid && bot._notifyChatByUid[uid]) ? bot._notifyChatByUid[uid] : Number(uid);
 

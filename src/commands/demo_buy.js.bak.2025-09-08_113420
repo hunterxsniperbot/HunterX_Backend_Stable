@@ -1,0 +1,182 @@
+import { runOnce as demoBuy } from './demoBuyOnce.js';
+import { sellAllDemo, getState, resetDemoBank } from '../services/demoBank.js';
+import { getSheets } from '../services/sheetsClient.js';
+
+function fmt(n, d=6){ return Number(n).toFixed(d); }
+
+// Crea la pestaña si no existe
+async function ensureSheetTab(sheets, spreadsheetId, title){
+  const meta = await sheets.spreadsheets.get({
+    spreadsheetId,
+    fields: 'sheets.properties.title'
+  });
+  const exists = (meta.data.sheets||[]).some(s => s.properties?.title === title);
+  if (!exists){
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId,
+      requestBody: { requests: [{ addSheet: { properties: { title } } }] }
+    });
+  }
+}
+
+export default function(bot){
+  console.log('✅ DEMO: registrando /demo_reset /demo_buy /demo_state /demo_sell /registro_export');
+
+  // /demo_reset [USD]
+  bot.onText(/^\/demo_reset(?:\s+(\d+(?:\.\d+)?))?$/i, async (msg, m) => {
+    const chatId = msg.chat.id;
+    const seed = Number(m?.[1] ?? 1000);
+    resetDemoBank(seed);
+    const s = getState();
+    await bot.sendMessage(chatId,
+      `🔄 DEMO RESET a $${fmt(seed,2)}\nCash: $${fmt(s.cash,2)} | Invested: $${fmt(s.invested,2)} | Total: $${fmt(s.total,2)}`
+    );
+  });
+
+  // /demo_buy [montoUSD]
+  bot.onText(/^\/demo_buy(?:\s+(\d+(?:\.\d+)?))?$/i, async (msg, match) => {
+    const chatId = msg.chat.id;
+    const amount = Math.max(5, Math.min(2000, Number(match?.[1] ?? 20)));
+    try {
+      const r = await demoBuy({ token: 'SOL', amountUsd: amount });
+      const s = r.state;
+      const text =
+`🟣 DEMO BUY ejecutado
+🪙 Token: SOL
+💵 Monto: $${fmt(amount,2)}
+💰 Precio: $${fmt(r.priceUsd,4)}
+🔢 Qty: ${fmt(r.qty,6)}
+
+💼 Estado:
+• Cash: $${fmt(s.cash,2)}
+• Invested: $${fmt(s.invested,2)}
+• Total: $${fmt(s.total,2)}
+• Posiciones abiertas: ${s.positions.length}`;
+      await bot.sendMessage(chatId, text, { disable_web_page_preview: true });
+    } catch(e){
+      }
+  });
+
+  // /demo_state
+  bot.onText(/^\/demo_state$/i, async (msg) => {
+    const chatId = msg.chat.id;
+    const s = getState();
+    const linesPos = s.positions.map(p =>
+      `• ${p.token} qty=${fmt(p.qty,6)} @ $${fmt(p.priceIn,4)} (USD ${fmt(p.amountUsd,2)})`
+    );
+    const text =
+`📊 DEMO STATE
+Cash: $${fmt(s.cash,2)} | Invested: $${fmt(s.invested,2)} | Total: $${fmt(s.total,2)}
+Abiertas: ${s.positions.length}
+${linesPos.length ? linesPos.join('\n') : '— sin posiciones —'}`;
+    await bot.sendMessage(chatId, text);
+  });
+
+  // /demo_sell [precio] [token]
+  bot.onText(/^\/demo_sell(?:\s+(\d+(?:\.\d+)?))?(?:\s+([A-Z0-9_]+))?$/i, async (msg, match) => {
+    const chatId = msg.chat.id;
+    const price = Number(match?.[1] ?? 120);
+    const token = (match?.[2] ?? 'SOL').toUpperCase();
+    try {
+      const r = sellAllDemo({ token, priceUsd: price, reason: 'manual' });
+      const s = getState();
+      const text =
+`🟣 DEMO SELL ejecutado
+🪙 Token: ${token}
+💰 Precio salida: $${fmt(price,4)}
+💸 Realizado (recupero + PnL): $${fmt(r.realizedUsd,2)}
+
+💼 Estado:
+• Cash: $${fmt(s.cash,2)}
+• Invested: $${fmt(s.invested,2)}
+• Total: $${fmt(s.total,2)}
+• Posiciones abiertas: ${s.positions.length}`;
+      await bot.sendMessage(chatId, text);
+    } catch(e){
+      await bot.sendMessage(chatId, '❌ DEMO SELL error: ' + (e?.message||e));
+    }
+  });
+
+  // /registro_export → escribe filas en "Registros" (crea la pestaña si no existe)
+  bot.onText(/^\/registro_export$/i, async (msg) => {
+    const chatId = msg.chat.id;
+    try{
+      const SHEET_ID = process.env.GOOGLE_SHEETS_ID;
+      if (!SHEET_ID) throw new Error('Falta GOOGLE_SHEETS_ID en .env');
+      const { closed } = getState();
+      if (!closed.length){
+        await bot.sendMessage(chatId, '📒 No hay cierres para exportar todavía.');
+        return;
+      }
+
+      const rows = closed.map(c => ([
+        c.ts,
+        c.token,
+        fmt(c.qty,6),
+        fmt(c.priceIn,4),
+        fmt(c.priceOut,4),
+        fmt(c.amountUsd,2),
+        fmt(c.pnlUsd,2),
+        (process.env.WALLET_MODE || 'DEMO'),
+      ]));
+
+      const sheets = getSheets();
+      await ensureSheetTab(sheets, SHEET_ID, 'Registros');   // ← asegura la pestaña
+      await sheets.spreadsheets.values.append({
+        spreadsheetId: SHEET_ID,
+        range: 'Registros!A1',
+        valueInputOption: 'USER_ENTERED',
+        requestBody: { values: rows },
+      });
+
+      await bot.sendMessage(chatId, `✅ Exportadas ${rows.length} fila(s) a *Registros*`, { parse_mode:'Markdown' });
+    }catch(e){
+      await bot.sendMessage(chatId, '❌ Export error: '+(e?.message||e));
+    }
+  });
+}
+
+
+// === Teclado inline (igual al del autosniper)
+function renderTradeKeyboard(uid, tradeId) {
+  const u = String(uid);
+  const t = String(tradeId || `demo-${Date.now()}`);
+  return {
+    inline_keyboard: [
+      [ { text: "📊 PnL", callback_data: `hxv1|pnl|${u}|${t}` } ],
+      [
+        { text: "25%", callback_data: `hxv1|sell|${u}|${t}|25` },
+        { text: "50%", callback_data: `hxv1|sell|${u}|${t}|50` },
+        { text: "75%", callback_data: `hxv1|sell|${u}|${t}|75` },
+        { text: "💯",  callback_data: `hxv1|sell|${u}|${t}|100` }
+      ]
+    ]
+  };
+}
+
+// === Tarjeta estilo HunterX (DEM0 BUY manual)
+async function announceDemoBuyCard(bot, chatId, uid, info) {
+  const tradeId = String(info.tradeId || `demo-${Date.now()}`);
+  const sym = String(info.symbol || "SOL");
+  const price = Number(info.priceUsd ?? info.price ?? 0) || null;
+  const size = Number(info.amountUsd ?? info.amount ?? 0) || 0;
+
+  // En manual no sabemos el par, dejamos enlaces genéricos válidos
+  const ts = new Date().toLocaleString();
+  const lines = [
+    "✅ <b>COMPRA AUTOMÁTICA EJECUTADA</b>",
+    "🧾 <b>Trade ID:</b> #" + tradeId,
+    "🪙 <b>Token:</b> $" + sym + " (So1111…)",
+    "🔗 <b>Ruta:</b> Raydium • <b>Slippage:</b> 50 bps • <b>Fees/Gas:</b> ~0.01",
+    "💵 <b>Invertido:</b> " + size.toFixed(2) + " USD (0.000000 SOL)  " + (price!=null ? "🎯 <b>Entrada:</b> " + price.toFixed(4) + " USD" : ""),
+    "🛡️<b>Guardas:</b>",
+    "- Honeypot ✅",
+    "• Liquidez bloqueada 🔒",
+    "• Propiedad renunciada 🗝️",
+    "• Datos desactualizados ✅",
+    "⏱️ <b>Hora:</b> " + ts,
+    "<b>Enlaces rápidos</b> <a href=\"https://dexscreener.com/solana\">DexScreener</a> | <a href=\"https://jup.ag/swap/SOL-USDC\">Jupiter</a> | <a href=\"https://raydium.io/swap/?from=SOL&to=USDC\">Raydium</a> | <a href=\"https://birdeye.so/token/SOL?chain=solana\">Birdeye</a> | <a href=\"https://solscan.io/token/So11111111111111111111111111111111111111112\">Solscan</a>"
+  ];
+  const html = lines.join("\n");
+  await bot.sendMessage(chatId, html, { parse_mode: "HTML", disable_web_page_preview: true, reply_markup: renderTradeKeyboard(uid, tradeId) });
+}

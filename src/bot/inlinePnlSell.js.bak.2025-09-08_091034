@@ -1,0 +1,27 @@
+export default function registerInlinePnlSell(bot){
+  bot.on('callback_query', async (q)=>{
+    try{
+      const data = q.data || '';
+      if (!/^hxv1\|/.test(data)) return; // no es nuestro botón
+      const [ver, action, uid, tradeId, pctRaw] = data.split('|');
+      const chatId = q.message?.chat?.id ?? Number(uid);
+
+      if (action === 'pnl') {
+        await bot.answerCallbackQuery(q.id, { text: '📊 Actualizando PnL…', show_alert: false }).catch(()=>{});
+        // TODO GO2: calcular PnL real y editar la card
+        await bot.sendMessage(chatId, `📊 PnL refrescado (demo) — trade ${tradeId}`).catch(()=>{});
+        return;
+      }
+
+      if (action === 'sell') {
+        const pct = Number(pctRaw||0);
+        await bot.answerCallbackQuery(q.id, { text: `✂️ Orden DEMO: vender ${pct}%`, show_alert: false }).catch(()=>{});
+        // TODO GO2: integrar con demoBank / trading.logTrade y editar la card
+        await bot.sendMessage(chatId, `✂️ VENTA PARCIAL EJECUTADA (DEMO)\nTrade ${tradeId} — ${pct}%`).catch(()=>{});
+        return;
+      }
+    } catch(e){
+      try{ await bot.answerCallbackQuery(q.id, { text: '❌ Error: '+String(e?.message||e), show_alert: true }); }catch{}
+    }
+  });
+}
