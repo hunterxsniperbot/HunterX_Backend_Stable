@@ -265,6 +265,24 @@ async function renderOrEdit(bot, chatId, mode, opts = {}){
 // ─────────────────────────────────────────────────────────────────────────────
 // Registro del comando + callbacks
 // ─────────────────────────────────────────────────────────────────────────────
+function __hxComputeDemoBalances(bot, uid){
+  const cap = Number(process.env.DEMO_BANK_CAP||1000);
+  let invested = 0, open = 0;
+  const map = bot._hxTradeInfo || {};
+  const p = uid + ':';
+  for (const k of Object.keys(map)) {
+    if (!k.startsWith(p)) continue;
+    const info = map[k] || {};
+    const rem = Number(info.remUsd ?? info.amountUsdRem ?? 0);
+    const remPct = Number(info.remPct ?? 0);
+    if (rem>0 && remPct>0) { invested += rem; open++; }
+  }
+  if (invested<0) invested=0;
+  if (invested>cap) invested=cap;
+  const free = Math.max(0, cap - invested);
+  return { cap, invested, free, open };
+}
+
 export default function registerWallet(bot){
   // /wallet [demo|real]
   bot.onText(/\/wallet(?:\s+(demo|real))?/i, async (msg, match) => {

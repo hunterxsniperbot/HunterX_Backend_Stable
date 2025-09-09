@@ -48,3 +48,4 @@ var/
 
 src/**/*.bak.*
 *.bak.*
+data/closed_trades.json

@@ -1,6 +1,20 @@
 import { buyDemo, resetDemoBank } from "../services/demoBank.js";
 
-/* ==== Teclado inline (PnL + ventas 25/50/75/100) ==== */
+/* ==== Precio: Jupiter (fallback fijo) ==== */
+export async function fetchQuote(symbol="SOL", fallback=213.90){
+  try{
+    const id = String(symbol||"SOL").toUpperCase();
+    const url = `https://price.jup.ag/v6/price?ids=${encodeURIComponent(id)}`;
+    const res = await fetch(url, { method:"GET", keepalive:false, cache:"no-store" });
+    if(!res.ok) throw new Error("HTTP "+res.status);
+    const js = await res.json();
+    const p = js?.data?.[id]?.price;
+    if (Number.isFinite(p)) return Number(p);
+  }catch{}
+  return Number(fallback||0);
+}
+
+/* ==== Teclado inline ==== */
 function renderTradeKeyboard(uid, tradeId) {
   const u = String(uid);
   const t = String(tradeId || `demo-${Date.now()}`);
@@ -17,8 +31,8 @@ function renderTradeKeyboard(uid, tradeId) {
   };
 }
 
-/* ==== Anuncio EXACTO pedido (HTML) ==== */
-function escHtml(s) { return String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+/* ==== HTML tarjeta compra ==== */
+function escHtml(s){ return String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
 
 async function announceDemoBuy(bot, chatId, uid, info) {
   const tradeId = String(info.tradeId || `demo-${Date.now()}`);
@@ -26,7 +40,7 @@ async function announceDemoBuy(bot, chatId, uid, info) {
   const usd     = Number(info.amountUsd ?? info.size ?? 0);
   const price   = (info.priceUsd != null) ? Number(info.priceUsd) : null;
 
-  // Links: SOL por defecto (en DEMO)
+  // Links demo (SOL)
   const mintSOL = "So11111111111111111111111111111111111111112";
   const linkDex  = 'https://dexscreener.com/solana';
   const linkJup  = 'https://jup.ag/swap/SOL-USDC';
@@ -39,7 +53,7 @@ async function announceDemoBuy(bot, chatId, uid, info) {
   const lines = [
     "✅ <b>COMPRA AUTOMÁTICA EJECUTADA</b>",
     "🧾 <b>Trade ID:</b> #"+tradeId,
-    "🪙 <b>Token:</b> $"+sym+" (So1111…)",
+    "🪙 <b>Token:</b> $"+escHtml(sym)+" (So1111…)",
     "🔗 <b>Ruta:</b> Raydium • <b>Slippage:</b> 50 bps • <b>Fees/Gas:</b> ~0.01",
     "💵 <b>Invertido:</b> "+usd.toFixed(2)+" USD (0.000000 SOL)  " + (price!=null ? "🎯 <b>Entrada:</b> "+price.toFixed(4)+" USD" : ""),
     "🛡️<b>Guardas:</b>",
@@ -63,60 +77,70 @@ async function announceDemoBuy(bot, chatId, uid, info) {
     reply_markup: renderTradeKeyboard(uid, tradeId),
   });
 
-  // Guardamos mapping para poder operar PnL y ventas
+  // Guardamos referencias para edición/ventas
   bot._hxMsgByKey  = bot._hxMsgByKey  || {};
   bot._hxTradeInfo = bot._hxTradeInfo || {};
   const k = `${uid}:${tradeId}`;
   bot._hxMsgByKey[k] = { chatId, message_id: res.message_id };
 
   const _entry = price ?? 213.90;
-  const _amt   = usd;
+  const _amt   = Number(usd||0);
   const _qty   = (_entry>0) ? (_amt / _entry) : 0;
 
-  /* HX:init rem fields */
   bot._hxTradeInfo[k] = {
-    ts: ts,
+ts,
     tradeId,
     symbol: sym,
     mint: mintSOL,
-    amountUsd: _amt,           // monto original
+    amountUsd: _amt,   
+      amountUsdRem: _amt,
+// original
     entryUsd: _entry,
-    qtyEntry: _qty,            // cantidad teórica a precio de entrada
-    // Acumuladores ventas (para promedio de salida y pnl realizado)
+    qtyEntry: _qty,
+    // acumuladores ventas
     qtySoldCum: 0,
     soldUsdCum: 0,
-    // Remanente (USD y %)
+    // remanente
     remUsd: _amt,
     remPct: 100
-  
   };
 }
+
 /* ==== Registro de comandos ==== */
 export default function registerDemoCmds(bot) {
-  // /demo_reset
-  bot.onText(/^\/demo_reset\b/i, async (msg) => {
+  // /demo_reset robusto
+  bot.onText(/^\/demo_reset(?:@[\w_]+)?\b/i, async (msg) => {
     const uid = String(msg.from.id);
-    try {
-      await resetDemoBank(uid, { amount: 1000 });
-      await bot.sendMessage(msg.chat.id,
-        "🔄 DEMO RESET a $1000.00\nCash: $1000.00 | Invested: $0.00 | Total: $1000.00",
-        { disable_web_page_preview: true }
-      );
-    } catch(e) {
-      await bot.sendMessage(msg.chat.id, "❌ DEMO RESET falló: " + (e?.message||e));
-    }
+
+    // Limpiar estado local
+    bot._hxMsgByKey  = bot._hxMsgByKey  || {};
+    bot._hxTradeInfo = bot._hxTradeInfo || {};
+    bot._hxRemain    = bot._hxRemain    || {};
+    for (const k of Object.keys(bot._hxMsgByKey))  if (k.startsWith(uid+':')) delete bot._hxMsgByKey[k];
+    for (const k of Object.keys(bot._hxTradeInfo)) if (k.startsWith(uid+':')) delete bot._hxTradeInfo[k];
+    for (const k of Object.keys(bot._hxRemain))    if (k.startsWith(uid+':')) delete bot._hxRemain[k];
+
+    const cap = Number(process.env.DEMO_BANK_CAP||1000);
+    try { await resetDemoBank(uid, { amount: cap }); }
+    catch(e){ console.log('[/demo_reset] soft-fail:', e?.message||e); }
+
+    const cap2 = cap.toFixed(2);
+    await bot.sendMessage(
+      msg.chat.id,
+      `🔄 DEMO RESET a $${cap2}\nCash: $${cap2} | Invested: $0.00 | Total: $${cap2}`,
+      { disable_web_page_preview: true }
+    );
   });
 
-  // /demo_buy 20
+  // /demo_buy <usd>
   bot.onText(/^\/demo_buy\s+(\d+(?:\.\d+)?)\b/i, async (msg, m) => {
     const uid = String(msg.from.id);
     const chatId = msg.chat.id;
     const usd = Number(m[1]);
     const tradeId = `demo-${Date.now()}`;
-    const priceUsd = 213.90; // placeholder estable (cuando integremos quote, lo reemplazamos)
+    const priceUsd = await fetchQuote("SOL", 213.90);
 
     try {
-      // persistencia demo
       await buyDemo(uid, {
         amountUsd: usd,
         token: "SOL",
@@ -125,11 +149,9 @@ export default function registerDemoCmds(bot) {
         mint: "So11111111111111111111111111111111111111112",
       });
     } catch(e) {
-      // Seguimos de todas formas para que veas la tarjeta (no cortamos la UX)
-      console.log("[demo_cmds] buyDemo error:", e?.message||e);
+      console.log("[/demo_buy] buyDemo error:", e?.message||e);
     }
 
-    // Tarjeta nueva (exacta) con botones
     await announceDemoBuy(bot, chatId, uid, {
       symbol: "SOL",
       amountUsd: usd,
