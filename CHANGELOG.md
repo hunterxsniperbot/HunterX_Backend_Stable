@@ -54,3 +54,19 @@ Registro de versiones y avances del backend del bot **Hunter X**.
 - Mostrar posiciones abiertas
 - Botones de venta parcial
 - Links a DexScreener y Solscan
+
+## hx-2025-09-09_2104
+**Added**
+- Tarjeta única con 'Invertido' vivo y ventas parciales con recibos
+- Resumen /registro + botón a Sheets mensual (DEMO_/REAL_)
+- Persistencia Supabase + sumClosedPnL para hoy/semana/mes
+- /wallet con libre/invertido y PnL agregada
+
+**Changed**
+- Links por token (mint) en DexScreener/Solscan
+- Formato fecha AR en pushes y Sheets
+
+**Fixed**
+- Duplicados de helpers y retornos top-level
+- Ediciones inline y refresco tras venta
+
