@@ -1,9 +1,9 @@
 import sheets from "../services/sheets.js";
-import { insertClosedTrade, tableForMode } from "../services/supa.js";
-// src/bot/inlinePnlSell.js (canonical clean)
-import { sellAllDemo } from "../services/demoBank.js";
+import { insertClosedTrade } from "../services/supa.js";
+import { appendTradeToSheet } from "../services/sheets.js";
 
-/* ===== UI helpers ===== */
+// src/bot/inlinePnlSell.js (canonical clean)
+import { sellAllDemo } from "../services/demoBank.js";/* ===== Helpers (sanados) ===== */
 function renderTradeKeyboard(uid, tradeId) {
   const u = String(uid);
   const t = String(tradeId || `demo-${Date.now()}`);
@@ -19,26 +19,28 @@ function renderTradeKeyboard(uid, tradeId) {
     ]
   };
 }
-function escHtml(s){ return String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
 
-/* ===== Quotes (toast PnL) ===== */
-async function getUsdQuote(symbol, mint, fallback) {
-  try {
-    const id = (symbol || "SOL").toUpperCase();
-    const url = `https://price.jup.ag/v6/price?ids=${encodeURIComponent(id)}`;
-    const res = await fetch(url, { method:"GET", keepalive:false, cache:"no-store" });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const js = await res.json();
-    const p = js?.data?.[id]?.price;
-    if (Number.isFinite(p)) return Number(p);
-  } catch {}
-  return Number(fallback || 0);
+function escHtml(s){
+  return String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
 }
 
-/* ===== Card builder (refresca “Invertido”) ===== */
+/* Quote rápido (Jupiter) con fallback */
+async function getUsdQuote(symbol="SOL", mint, fallback=0){
+  try{
+    const id  = String(symbol||"SOL").toUpperCase();
+    const url = `https://price.jup.ag/v6/price?ids=${encodeURIComponent(id)}`;
+    const res = await fetch(url, { method: "GET", keepalive: false, cache: "no-store" });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const js = await res.json();
+    const p  = js?.data?.[id]?.price;
+    if (Number.isFinite(p)) return Number(p);
+  } catch {}
+  return Number(fallback||0);
+}
+
 function buildTradeHtml(info) {
   const mintSOL = info.mint || "So11111111111111111111111111111111111111112";
-  const linkDex  = "https://dexscreener.com/solana";
+  const linkDex  = "https://dexscreener.com/solana/" + mintSOL;
   const linkJup  = "https://jup.ag/swap/SOL-USDC";
   const linkRay  = "https://raydium.io/swap/?from=SOL&to=USDC";
   const linkBird = `https://birdeye.so/token/${mintSOL}?chain=solana`;
@@ -46,11 +48,11 @@ function buildTradeHtml(info) {
 
   const lines = [
     "✅ <b>COMPRA AUTOMÁTICA EJECUTADA</b>",
-    "🧾 <b>Trade ID:</b> #"+escHtml(info.tradeId || "—"),
-    "🪙 <b>Token:</b> $"+escHtml(info.symbol || "SOL")+" (So1111…)",
+    "🧾 <b>Trade ID:</b> #" + (info.tradeId ?? "—"),
+    "🪙 <b>Token:</b> $" + (info.symbol ?? "SOL") + " (So1111…)",
     "🔗 <b>Ruta:</b> Raydium • <b>Slippage:</b> 50 bps • <b>Fees/Gas:</b> ~0.01",
-    "💵 <b>Invertido:</b> "+Number((info.amountUsdRem ?? info.remUsd) || 0).toFixed(2)+" USD (0.000000 SOL)  " +
-      (info.entryUsd!=null ? "🎯 <b>Entrada:</b> "+Number(info.entryUsd).toFixed(4)+" USD" : ""),
+    "💵 <b>Invertido:</b> " + Number(info.amountUsdRem ?? 0).toFixed(2) + " USD (0.000000 SOL)  " +
+      (info.entryUsd != null ? "🎯 <b>Entrada:</b> " + Number(info.entryUsd).toFixed(4) + " USD" : ""),
     "🛡️<b>Guardas:</b>",
     "- Honeypot ✅",
     "• Liquidez bloqueada 🔒",
@@ -80,96 +82,61 @@ async function editBuyCard(bot, uid, tradeId) {
       message_id: ref.message_id,
       parse_mode: "HTML",
       disable_web_page_preview: true,
-      reply_markup: renderTradeKeyboard(uid, tradeId)
+      reply_markup: renderTradeKeyboard(uid, tradeId),
     });
-  } catch {}
-}
-
-/* ===== Recibos (ENV) ===== */
-function __hxActiveMode(bot){
-  try{
-    if (bot?._hxMode?.mode) return String(bot._hxMode.mode).toUpperCase();
-    if (process?.env?.HX_MODE) return String(process.env.HX_MODE).toUpperCase();
-  }catch{}
-  return "DEMO";
-}
-
-async function recordClose(info, uid){
-  try{
-    const nowIso = new Date().toISOString();
-    const day    = nowIso.slice(0,10).replace(/-/g,"");
-    const qtyAll = Number(info.qtyEntry||0);
-    const entry  = Number(info.entryUsd||0);
-    const avgOut = Number(info.avgExitPx||info.exitPx||0);
-    const invUsd = Number(info.amountUsdOrig||info.amountUsd||0);
-
-    // Si cerró 100%, qtySoldCum ≈ qtyEntry
-    const pnlPct = (entry>0 && avgOut>0) ? ((avgOut/entry - 1)*100) : 0;
-    const pnlUsd = (qtyAll>0 && entry>0 && avgOut>0) ? ((avgOut-entry)*qtyAll) : 0;
-
-    const row = {
-      uid: String(uid||""),
-      mode: "DEMO",            // si tenés flag global para REAL, cámbialo aquí
-      type: "sell",
-      token: String(info.symbol||"—"),
-      mint:  String(info.mint||""),
-      entrada_usd: (entry||null),
-      salida_usd:  (avgOut||null),      // usamos promedio de salida
-      inversion_usd: invUsd,
-      pnl_usd: pnlUsd,
-      pnl_pct: pnlPct,
-      red: "Solana",
-      fuente: "bot_hunterx",
-      url: "",
-      extra: "",
-      fecha_hora: nowIso,
-      fecha_dia: Number(day)
-    };
-
-    try { await insertClosedTrade(row); } catch(e){ console.log("[recordClose] supa fail:", e?.message||e); }
-    // opcional: append a Sheets si tenés appendTradeToSheet(row)
-    // try { await appendTradeToSheet(row); } catch(e){}
-
-  } catch(e){
-    console.log("[recordClose] fatal:", e?.message||e);
+  } catch (e) {
+    // silencioso para no romper flujo si la edición falla
   }
 }
 
 
-function receiptMode(){ return (process?.env?.HX_RECEIPT_MODE || "partial_compact_close_full").trim(); }
-function receiptTtl(){ const n=Number(process?.env?.HX_RECEIPT_TTL||7); return Number.isFinite(n)&&n>0?n:7; }
+/* === Recibos (push) === */
+function receiptMode(){ 
+  return (process?.env?.HX_RECEIPT_MODE || "partial_compact_close_full").trim(); 
+}
+function receiptTtl(){ 
+  const n=Number(process?.env?.HX_RECEIPT_TTL||7); 
+  return Number.isFinite(n)&&n>0?n:7; 
+}
 
-async function sendReceipt(bot, chatId, type, payload) {
-  const { tradeId, symbol="SOL", soldUsd=0, pct=0, remUsd=0, rem=0, exitPx=null, avgExitPx=null } = payload || {};
+async function sendReceipt(bot, chatId, type, payload){
+  const { tradeId, symbol="SOL", soldUsd=0, pct=0, remUsd=0, rem=0, exitPx=null, avgExitPx=null } = payload||{};
   const mode = receiptMode();
 
-  if (type === "partial") {
+  if (type === "partial"){
     if (mode === "none") return;
     const msg =
-      `✂️ <b>VENTA PARCIAL EJECUTADA</b>\n` +
-      `🧾 <b>Trade ID:</b> #${tradeId} • <b>Token:</b> $${symbol}\n` +
+      "✂️ <b>VENTA PARCIAL EJECUTADA</b>\n" +
+      `🧾 <b>Trade ID:</b> #${tradeId} • <b>Token:</b> ${symbol}\n` +
       `💵 <b>Vendido:</b> ${Number(soldUsd).toFixed(2)} USD (${pct}%) • <b>Queda:</b> ${Number(remUsd).toFixed(2)} USD (${rem}%)\n` +
       `📤 <b>Salida:</b> ${exitPx!=null?Number(exitPx).toFixed(4):"—"}\n` +
-      `⏱️ <b>Hora:</b> ${new Date().toLocaleString()}`;
-    const res = await bot.sendMessage(chatId, msg, { parse_mode:"HTML", disable_web_page_preview:true });
-    if (mode.includes("compact")) {
-      try { setTimeout(()=>bot.deleteMessage(chatId, res.message_id).catch(()=>{}), receiptTtl()*1000); } catch {}
+      `⏱️ <b>Hora:</b> ${fmtARDate(new Date())}`;
+    const res = await bot.sendMessage(chatId,msg,{ parse_mode:"HTML", disable_web_page_preview:true });
+    if (mode.includes("compact")){
+      try{ setTimeout(()=>bot.deleteMessage(chatId, res.message_id).catch(()=>{}), receiptTtl()*1000); }catch{}
     }
     return;
   }
 
-  // close (100%) minimal
   if (mode === "none") return;
   const lines = [
     "✂️ <b>VENTA TOTAL EJECUTADA</b>",
-    `🧾 <b>Trade ID:</b> #${tradeId} • <b>Token:</b> $${symbol}`,
-    `📤 <b>Precio. Salida:</b> ${exitPx!=null?Number(exitPx).toFixed(4):"—"}`,
-    `⏱️ <b>Hora:</b> ${new Date().toLocaleString()}`
+    `🧾 <b>Trade ID:</b> #${tradeId} • <b>Token:</b> ${symbol}`,
+    `📤 <b>Prom. Salida:</b> ${avgExitPx!=null?Number(avgExitPx).toFixed(4):"—"} • <b>Últ. Salida:</b> ${exitPx!=null?Number(exitPx).toFixed(4):"—"}`,
+    `⏱️ <b>Hora:</b> ${fmtARDate(new Date())}`
   ];
-  await bot.sendMessage(chatId, lines.join("\n"), { parse_mode:"HTML", disable_web_page_preview:true });
+  await bot.sendMessage(chatId,lines.join("\n"),{ parse_mode:"HTML", disable_web_page_preview:true });
 }
 
-/* ===== Handler principal ===== */
+const HX_TZ = process.env.HX_TZ || "America/Argentina/Buenos_Aires";
+function fmtARDate(d=new Date()){
+  try{
+    return new Intl.DateTimeFormat("es-AR",{
+      timeZone: HX_TZ, year:"numeric", month:"2-digit", day:"2-digit",
+      hour:"2-digit", minute:"2-digit", second:"2-digit", hour12:false
+    }).format(d);
+  }catch{ return new Date().toLocaleString(); }
+}
 export default function registerInlinePnlSell(bot) {
   bot._hxMsgByKey  = bot._hxMsgByKey  || {};
   bot._hxTradeInfo = bot._hxTradeInfo || {};
@@ -267,7 +234,7 @@ export default function registerInlinePnlSell(bot) {
           pnl_pct: (info.entryUsd && avgExitPx) ? ((avgExitPx-info.entryUsd)/info.entryUsd)*100 : 0,
           closed_at: new Date().toISOString()
         };
-        try { await recordClose(close); } catch(e){ console.log("[close][local] warn:", e?.message||e); }
+        try { await ensureClosePersist(close); } catch(e){ console.log("[close][local] warn:", e?.message||e); }
         }
 
       try { await bot.answerCallbackQuery(q.id, { text: `✂️ Vendido ${btnPct}% (remanente ${info.remPct}%)`, show_alert:false }); } catch {}
@@ -278,4 +245,72 @@ export default function registerInlinePnlSell(bot) {
       bot._hxOpLock[key] = 0;
     }
   });
+}
+
+
+
+/* =========================================
+ * Persistencia de cierre (Supa + Sheets)
+ * Calcula entrada/salida/promedio/invertido/PNL y escribe
+ * ========================================= */
+async function ensureClosePersist(info){
+  try{
+    const mode = (process?.env?.MODE || 'DEMO').toUpperCase();
+
+    const entry = Number(
+      info.entry_px ??
+      info.entryUsd ??
+      0
+    ) || null;
+
+    const exitAvg = Number(
+      info.exit_px_avg ??
+      info.avgExitPx ??
+      info.exitPx ??
+      0
+    ) || null;
+
+    const invested = Number(
+      info.invested_usd ??
+      info.amountUsdOrig ??
+      info.inversion_usd ??
+      0
+    ) || 0;
+
+    const pnlPct = (entry && exitAvg) ? ((exitAvg - entry)/entry)*100 : 0;
+    const pnlUsd = invested * (pnlPct/100);
+
+    const row = {
+      mode, type: 'sell',
+      token: info.symbol || 'SOL',
+      mint: info.mint || 'So11111111111111111111111111111111111111112',
+      entrada_usd: entry,
+      salida_usd: exitAvg,
+      inversion_usd: invested,
+      pnl_usd: Number(pnlUsd.toFixed(2)),
+      pnl_pct: Number(pnlPct.toFixed(2)),
+      red: 'Solana',
+      fuente: 'bot',
+      url: '',
+      extra: '',
+      fecha_hora: new Date().toISOString(),
+      uid: info.uid || null,
+      chat_id: info.chatId || null
+    };
+
+    try {
+      const { insertClosedTrade } = await import("../services/supa.js");
+      await insertClosedTrade(row);
+    } catch(e){
+      console.log("[ensureClosePersist][supa] warn:", e?.message||e);
+    }
+    try {
+      const { appendTradeToSheet } = await import("../services/sheets.js");
+      await appendTradeToSheet(row);
+    } catch(e){
+      console.log("[ensureClosePersist][sheets] warn:", e?.message||e);
+    }
+  } catch(e) {
+    console.log("[ensureClosePersist] fatal:", e?.message||e);
+  }
 }
