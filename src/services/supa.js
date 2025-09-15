@@ -1,3 +1,13 @@
+/* 
+ * HUNTER X — services/supa | Persistencia Supabase — HX-S01 v2025-09-14
+ * Purpose: Insert de cierres, listado de trades, sumas de PnL y utilidades de tabla por modo.
+ * Inputs:  fetch REST Supabase
+ * Outputs: Funciones ESM reusables
+ * Deps:    ENV Supabase, fetch
+ * ENV:     SUPABASE_URL, SUPABASE_SERVICE_ROLE, SUPABASE_TABLE_DEMO, SUPABASE_TABLE_REAL
+ * Invariants: Siempre chequear r.ok; lanzar error con status para debugging
+ * Notes:   Auto-documentado; mantener esta cabecera al día.
+ */
 
 // src/services/supa.js — inserción y lectura de cierres (con uid)
 const BASE = process.env.SUPABASE_URL;

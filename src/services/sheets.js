@@ -1,3 +1,13 @@
+/* 
+ * HUNTER X — services/sheets | Google Sheets — HX-S02 v2025-09-14
+ * Purpose: Append de filas y autocreación de pestaña mensual con encabezados canónicos.
+ * Inputs:  fila normalizada
+ * Outputs: resultado de append (ok/tab/updates)
+ * Deps:    googleapis (JWT) o fetch a Sheets API
+ * ENV:     GOOGLE_APPLICATION_CREDENTIALS, GOOGLE_SHEETS_ID, SHEETS_TAB_MODE
+ * Invariants: Nunca falla duro si no hay red: retorna {ok:false,error}
+ * Notes:   Auto-documentado; mantener esta cabecera al día.
+ */
 
 // src/services/sheets.js (SHEETS_TAB_MODE=monthly|static)
 // Usa Service Account (GOOGLE_APPLICATION_CREDENTIALS) y GOOGLE_SHEETS_ID

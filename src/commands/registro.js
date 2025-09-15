@@ -1,3 +1,13 @@
+/* 
+ * HUNTER X — /registro | Posiciones cerradas — HX-R01 v2025-09-14
+ * Purpose: Listado de cerradas con filtros (hoy/semana/mes/fecha) + resumen del día y link a Sheets.
+ * Inputs:  Supabase (listClosedTrades, sumClosedPnL)
+ * Outputs: Mensaje Telegram HTML con anchors (DexScreener/Solscan/Sheets)
+ * Deps:    services/supa.js, services/sheets.js (opcional)
+ * ENV:     SHEETS_TAB_MODE, GOOGLE_SHEETS_ID, HX_TZ
+ * Invariants: Fechas en es-AR; tokens render sin romper si faltan campos
+ * Notes:   Auto-documentado; mantener esta cabecera al día.
+ */
 
 // src/commands/registro.js
 // /registro [hoy|ayer|semana|mes|YYYY-MM-DD|YYYY-MM-DD..YYYY-MM-DD]

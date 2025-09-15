@@ -1,6 +1,6 @@
 {
   "sniperOn": {
-    "7996740495": true
+    "7996740495": false
   },
   "realMode": {
     "7996740495": false
@@ -83,7 +83,8 @@
   },
   "userCfg": {
     "7996740495": {
-      "baseDemo": 2000
+      "baseDemo": 75,
+      "baseReal": 75
     }
   }
 }

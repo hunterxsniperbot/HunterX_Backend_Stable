@@ -1,10 +1,30 @@
+// ── .env (forced + override) ─────────────────────────────────────────────
+import dotenv from "dotenv";
+dotenv.config({ path: process.env.DOTENV_CONFIG_PATH || ".env", override: true });
+// ─────────────────────────────────────────────────────────────────────────
+// ── .env (forced + override) ─────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────
+
+// (debug opcional) // console.log("[env]", { GOPLUS: !!process.env.GOPLUS_API_KEY, CMC: !!process.env.CMC_API_KEY });
+// ─────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────
+
+// (opcional de debug) console.log("[env]", { GOPLUS: !!process.env.GOPLUS_API_KEY, CMC: !!process.env.CMC_API_KEY });
+// ─────────────────────────────────────────────────────────────────────────
+
 // import { wireCandidatos } from "./src/bot/wireCandidatos.js";
 import "./src/boot/ipv4.js";
 
 // index.js — Entry point HunterX (ESM, robusto)
 
 // 1) ENV + sane defaults
-import "dotenv/config";
+
 import { setDefaultResultOrder } from "node:dns";
 setDefaultResultOrder("ipv4first");
 
@@ -32,6 +52,7 @@ import attachWalletSell     from "./src/commands/wallet_sell.js";
 import registerRegistro     from "./src/commands/registro.js";
 import registerWallet       from "./src/commands/wallet.js";
 import registerStatus       from "./src/commands/status.js";
+import registerControl     from "./src/commands/control.js";
 import registerInitSheets   from "./src/commands/initSheets.js";
 import registerPick         from "./src/commands/pick.js";
 import registerMode         from "./src/commands/mode.js";
@@ -47,7 +68,7 @@ if (global.__HX_STARTED__) {
 }
 
 let bot = global.__HX_BOT__;
-const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+const TOKEN = process.env.BOT_TOKEN || process.env.TG_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN;
 
 if (!TOKEN) {
   console.warn("🟡 TELEGRAM_BOT_TOKEN no configurado — API arriba, Telegram deshabilitado.");
@@ -104,6 +125,7 @@ if (!TOKEN) {
     try { registerMensaje(bot);                                       console.log("✅ mensaje.js"); }         catch(e){ console.error("❌ mensaje:", e?.message||e); }
     try { attachWalletSell(bot);                                      console.log("✅ wallet_sell.js"); }     catch(e){ console.error("❌ wallet_sell:", e?.message||e); }
     try { registerStatus(bot);                                        console.log("✅ status.js"); }          catch(e){ console.error("❌ status:", e?.message||e); }
+    try { registerControl(bot);                                       console.log("✅ control.js"); }          catch(e){ console.error("❌ control:", e?.message||e); }
     try { registerInitSheets(bot);                                    console.log("✅ initSheets.js"); }      catch(e){ console.error("❌ initSheets:", e?.message||e); }
     try { registerPick(bot);                                          console.log("✅ pick.js"); }            catch(e){ console.error("❌ pick:", e?.message||e); }
     try { registerMode(bot);                                          console.log("✅ mode.js"); }            catch(e){ console.error("❌ mode:", e?.message||e); }

@@ -1,3 +1,14 @@
+/* 
+ * HUNTER X — inlinePnlSell | PnL/Sell callbacks — HX-B01 v2025-09-14
+ * Purpose: Botones 25/50/75/100% + recibos; guarda cierre en Supabase y (opcional) Sheets.
+ * Inputs:  callback_query, estado de trade (uid, entry, rem%), env de modo
+ * Outputs: Edición de tarjeta + recibo; registro en Supabase/Sheets
+ * Deps:    services/supa.js, services/sheets.js
+ * ENV:     HX_RECEIPT_MODE, HX_TZ
+ * Invariants: Nunca hace 'return' top-level; evita duplicar funciones; clamp de remanentes
+ * Notes:   Auto-documentado; mantener esta cabecera al día.
+ */
+
 import sheets from "../services/sheets.js";
 import { insertClosedTrade } from "../services/supa.js";
 import { appendTradeToSheet } from "../services/sheets.js";
@@ -9,7 +20,7 @@ function renderTradeKeyboard(uid, tradeId) {
   const t = String(tradeId || `demo-${Date.now()}`);
   return {
     inline_keyboard: [
-      [ { text: "📊 PnL", callback_data: `hxv1|pnl|${u}|${t}` } ],
+
       [
         { text: "25%", callback_data: `hxv1|sell|${u}|${t}|25` },
         { text: "50%", callback_data: `hxv1|sell|${u}|${t}|50` },
@@ -84,7 +95,8 @@ async function editBuyCard(bot, uid, tradeId) {
       disable_web_page_preview: true,
       reply_markup: renderTradeKeyboard(uid, tradeId),
     });
-  } catch (e) {
+  try { await (bot._hxRefreshWallet?.(uid)); } catch {}
+} catch (e) {
     // silencioso para no romper flujo si la edición falla
   }
 }
@@ -174,13 +186,7 @@ export default function registerInlinePnlSell(bot) {
       info.qtySoldCum    = Number(info.qtySoldCum ?? 0);
       info.exitPxCum     = Number(info.exitPxCum ?? 0);
 
-      if (kind === "pnl") {
-        const curr = await getUsdQuote(info.symbol, info.mint, info.entryUsd);
-        const pnlPct = info.entryUsd ? ((curr - info.entryUsd)/info.entryUsd)*100 : 0;
-        const pnlUsd = info.amountUsdOrig ? (info.amountUsdOrig * (curr/info.entryUsd - 1)) : 0;
-        try { await bot.answerCallbackQuery(q.id, { text: `📊 ${pnlPct.toFixed(2)}% (${pnlUsd.toFixed(2)}) • ${curr.toFixed(4)}`, show_alert:false }); } catch {}
-        return;
-      }
+      /* pnl branch removido */
 
       // === SELL: porcentaje sobre REMANENTE ===
       let btnPct = Math.max(1, Math.min(100, Number(pctStr || 0) || 0)); // 25/50/75/100 del remanente
