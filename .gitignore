@@ -1,51 +1,11 @@
-# Node
-node_modules/
-npm-debug.log*
-yarn-error.log*
-pnpm-lock.yaml
-package-lock.json
-
-# Build / caches
-dist/
-build/
-.cache/
-.tmp/
-
-# Env / claves
 .env
 .env.*
-.credentials
-*.key
-*.pem
-
-# OS / editor
-.DS_Store
-Thumbs.db
-.vscode/
-.idea/
-
-# === secrets ===
-.env
-sa.json
-
-# backups
-backup-*.tar.gz
-.env
-node_modules/
-logs/
-.env
+*/.env
 secrets/
-
-# Runtime local
-/data/
-*.pid
-
-# Backups locales
-*.bak_*
-*.bad_*
+*.json
+*.log
+logs/
 *.bak
-var/
-
-src/**/*.bak.*
-*.bak.*
-data/closed_trades.json
+*.bak_*
+*.backup
+*.local.*
