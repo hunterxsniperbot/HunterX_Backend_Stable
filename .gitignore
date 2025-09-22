@@ -9,3 +9,13 @@ logs/
 *.bak_*
 *.backup
 *.local.*
+# HunterX local
+.env
+secrets/
+secrets/*
+hx_logs/
+*.bak
+*.bak_*
+*.bak.*
+*.swp
+.DS_Store
