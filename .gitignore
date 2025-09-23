@@ -19,3 +19,16 @@ hx_logs/
 *.bak.*
 *.swp
 .DS_Store
+.env
+*.env
+*.pid
+*.log
+hx_logs/
+service_account.json
+node_modules/
+.env
+*.env
+*.pid
+*.log
+hx_logs/
+service_account.json
