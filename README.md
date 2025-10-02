@@ -96,3 +96,14 @@ D --> E[📅 Creación de evento en Agenda]
 E --> F[💬 Envío automático por WhatsApp Cloud API]
 F --> G[📱 Usuario recibe recordatorio]
 D --> H[📊 Dashboard PWA muestra estado y confirmación]
+
+```mermaid
+graph LR
+    A[Inicio] --> B{¿Funciona?}
+    B -->|Si| C[¡Perfecto!]
+    B -->|No| D[Revisar código]
+    D --> A
+    
+    style A fill:#4CAF50,color:#fff
+    style C fill:#2196F3,color:#fff
+```
