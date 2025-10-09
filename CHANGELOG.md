@@ -70,3 +70,92 @@ Registro de versiones y avances del backend del bot **Hunter X**.
 - Duplicados de helpers y retornos top-level
 - Ediciones inline y refresco tras venta
 
+graph TB
+    %% Estilos
+    classDef userClass fill:#4CAF50,stroke:#2E7D32,stroke-width:3px,color:#fff
+    classDef pwaClass fill:#2196F3,stroke:#1565C0,stroke-width:3px,color:#fff
+    classDef backendClass fill:#FF6B35,stroke:#D84315,stroke-width:3px,color:#fff
+    classDef aiClass fill:#9C27B0,stroke:#6A1B9A,stroke-width:3px,color:#fff
+    classDef storageClass fill:#FF9800,stroke:#E65100,stroke-width:3px,color:#fff
+    classDef notifClass fill:#00BCD4,stroke:#006064,stroke-width:3px,color:#fff
+
+    %% Nodos principales
+    U[Usuario habla: Recordarme llamar a mama manana]:::userClass
+    
+    PWA[PWA React - Web Speech API - Transcribe GRATIS]:::pwaClass
+    
+    EDGE[Supabase Edge Function /api/procesar-voz]:::backendClass
+    
+    CONTROL{Validar limites - Tiene interacciones disponibles?}:::storageClass
+    
+    LIMITE_OK[Dentro del limite]:::userClass
+    LIMITE_NO[Limite alcanzado - Ofrecer upgrade]:::notifClass
+    
+    GPT[GPT-4o-mini - Interpreta comando - Extrae datos]:::aiClass
+    
+    DB[(Supabase PostgreSQL - INSERT evento - UPDATE contador)]:::storageClass
+    
+    TTS[Google Cloud TTS - Genera audio - Voz argentina]:::aiClass
+    
+    RESP[PWA recibe Audio + JSON]:::pwaClass
+    
+    PLAY[Reproduce respuesta: Dale anotado! Llamar a mama manana 10:00]:::pwaClass
+    
+    N8N[n8n Workflow - Detecta nuevo evento - Programa recordatorio]:::backendClass
+    
+    CRON[Cron Job n8n - Cada 5 minutos - Chequea eventos proximos]:::backendClass
+    
+    DECIDE{Como recordar? Segun prioridad y plan del usuario}:::storageClass
+    
+    SOUND[Sonido en app - Alarma + voz - GRATIS]:::notifClass
+    
+    WA[WhatsApp - Evolution API - Mensaje argentino]:::notifClass
+    
+    PUSH[Push Notification - Web Push API - GRATIS]:::notifClass
+    
+    FINAL[Usuario recibe recordatorio a tiempo]:::userClass
+
+    %% Flujo principal
+    U -->|1. Habla| PWA
+    PWA -->|2. Texto transcrito| EDGE
+    EDGE -->|3. Valida usuario| CONTROL
+    CONTROL -->|Consulta plan y contador| DB
+    
+    CONTROL -->|Tiene creditos| LIMITE_OK
+    CONTROL -->|Sin creditos| LIMITE_NO
+    
+    LIMITE_NO -->|Notifica| PWA
+    
+    LIMITE_OK -->|4. Envia texto| GPT
+    GPT -->|5. JSON estructurado| EDGE
+    
+    EDGE -->|6a. Guarda evento| DB
+    EDGE -->|6b. Incrementa contador| DB
+    EDGE -->|7. Texto respuesta| TTS
+    
+    TTS -->|8. Audio MP3| EDGE
+    EDGE -->|9. Response completo| RESP
+    
+    RESP -->|10. Reproduce| PLAY
+    
+    %% Flujo de recordatorios
+    DB -.->|Webhook nuevo evento| N8N
+    N8N -->|Programa en calendario| CRON
+    
+    CRON -->|Query eventos proximos| DB
+    CRON -->|Si evento en 15 min| DECIDE
+    
+    DECIDE -->|Prioridad baja/media| SOUND
+    DECIDE -->|Prioridad alta| WA
+    DECIDE -->|Siempre tambien| PUSH
+    
+    SOUND --> FINAL
+    WA --> FINAL
+    PUSH --> FINAL
+
+    %% Notas
+    NOTE1[Web Speech API - reconoce espanol argentino - SIN COSTO]:::pwaClass
+    
+    NOTE2[GPT-4o-mini - 0.0002 por 1K tokens - aprox 0.0006 por interaccion]:::aiClass
+    
+    NOTE3[Contador por plan: Gratis 50/mes - Basico 300/mes - Pro 1000/mes]:::storageClass
